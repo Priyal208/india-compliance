@@ -1,12 +1,40 @@
+from enum import Enum
 from io import BytesIO
 
+import frappe
 import openpyxl
+from frappe.desk.utils import provide_binary_file
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-import frappe
-from frappe.desk.utils import provide_binary_file
+# Shared cell-fill palette for every GST-returns Excel export.
+COLOR_PALLATE = frappe._dict(
+    {
+        "dark_gray": "d9d9d9",
+        "light_gray": "f2f2f2",
+        "dark_pink": "e6b9b8",
+        "light_pink": "f2dcdb",
+        "sky_blue": "c6d9f1",
+        "light_blue": "dce6f2",
+        "green": "d7e4bd",
+        "light_green": "ebf1de",
+    }
+)
+
+# Shared number formats for GST-returns Excel exports.
+AMOUNT_FORMAT = "#,##0.00"
+DATE_FORMAT = "dd-mmm-yy"
+PERCENT_FORMAT = "0.00"
+
+
+class ExcelWidth(Enum):
+    XS = 10
+    SM = 15
+    MD = 20  # Default
+    LG = 25
+    XL = 30
+    XXL = 35
 
 
 class ExcelExporter:
@@ -148,10 +176,11 @@ class Worksheet:
         self.add_data(headers, is_header=True)
         self.add_data(data, is_data=True)
 
-        if add_totals:
+        if data and add_totals:
             self.add_data(self.get_totals(), is_total=True)
 
-        self.apply_conditional_formatting(add_totals)
+        if data:
+            self.apply_conditional_formatting(add_totals)
 
     def insert_data(
         self,
@@ -172,7 +201,7 @@ class Worksheet:
                 if transform:
                     value = transform(value, row)
 
-                sheet.cell(row=i, column=j, value=value or "")
+                sheet.cell(row=i, column=j, value="" if value is None else value)
 
     def add_data(self, data, **kwargs):
         if not data:

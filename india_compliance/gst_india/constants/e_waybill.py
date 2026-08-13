@@ -1,6 +1,12 @@
 # Just for reference
 # DATETIME_FORMAT = "%d/%m/%Y %I:%M:%S %p"
 
+SANDBOX_SHIP_TO = {
+    "gstin": "02AMBPG7773M002",
+    "state_number": "02",
+    "pincode": 171302,
+}
+
 selling_address = {
     "bill_from": "company_address",
     "bill_to": "customer_address",
@@ -30,7 +36,18 @@ ADDRESS_FIELDS = {
     "Stock Entry": stock_entry_address,
     "Subcontracting Receipt": buying_address,
 }
+
+ADDRESS_GSTIN_FIELD_MAP = {
+    "customer_address": "billing_address_gstin",
+    "company_address": "company_gstin",
+    "supplier_address": "supplier_gstin",
+    "billing_address": "company_gstin",
+    "bill_from_address": "bill_from_gstin",
+    "bill_to_address": "bill_to_gstin",
+}
 PERMITTED_DOCTYPES = list(ADDRESS_FIELDS.keys())
+
+BUYING_DOCTYPES = {doctype for doctype, address in ADDRESS_FIELDS.items() if address is buying_address}
 
 CANCEL_REASON_CODES = {
     "Duplicate": "1",
@@ -90,6 +107,9 @@ TRANSPORT_TYPES = {
     3: "Bill From - Dispatch From",
     4: "Combination of 2 and 3",
 }
+
+# transaction types where goods are shipped to an address different from Bill To
+SHIP_TO_TRANSACTION_TYPES = (2, 4)
 VEHICLE_TYPES = {"Regular": "R", "Over Dimensional Cargo (ODC)": "O"}
 
 TRANSIT_TYPES = {"Road": "R", "Warehouse": "W", "Others": "O"}

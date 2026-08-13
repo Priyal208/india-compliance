@@ -1,12 +1,14 @@
+from typing import ClassVar
+
 from india_compliance.gst_india.constants import UOM_MAP
 from india_compliance.gst_india.utils.gstr_mapper_utils import GovDataMapper
 from india_compliance.gst_india.utils.itc_04 import (
-    GovDataField,
     GovDataField_SE,
-    GovJsonKey,
     ITC04_DataField,
     ITC04_ItemField,
     ITC04JsonKey,
+    JsonKey,
+    RawField,
 )
 
 ############################################################################################################
@@ -21,7 +23,7 @@ class ITC04DataMapper(GovDataMapper):
     ITC-04 JSON format - https://developer.gst.gov.in/pages/apiportal/data/Returns/ITC04%20-%20Save/v1.2/ITC04%20-%20Save%20attributes.xlsx
     """
 
-    DEFAULT_ITEM_AMOUNTS = {
+    DEFAULT_ITEM_AMOUNTS: ClassVar[dict] = {
         ITC04_ItemField.TAXABLE_VALUE.value: 0,
         ITC04_ItemField.IGST.value: 0,
         ITC04_ItemField.CGST.value: 0,
@@ -29,13 +31,13 @@ class ITC04DataMapper(GovDataMapper):
         ITC04_ItemField.CESS_AMOUNT.value: 0,
     }
 
-    FLOAT_FIELDS = {
-        GovDataField.TAXABLE_VALUE.value,
-        GovDataField.IGST.value,
-        GovDataField.CGST.value,
-        GovDataField.SGST.value,
-        GovDataField.CESS_AMOUNT.value,
-        GovDataField.QUANTITY.value,
+    FLOAT_FIELDS: ClassVar[set] = {
+        RawField.TAXABLE_VALUE.value,
+        RawField.IGST.value,
+        RawField.CGST.value,
+        RawField.SGST.value,
+        RawField.CESS_AMOUNT.value,
+        RawField.QUANTITY.value,
     }
 
     def __init__(self):
@@ -65,31 +67,31 @@ class ITC04DataMapper(GovDataMapper):
 
 
 class FGReceived(ITC04DataMapper):
-    CATEGORY = ITC04JsonKey.FG_RECEIVED.value
+    CATEGORY: ClassVar[str] = ITC04JsonKey.FG_RECEIVED.value
 
-    KEY_MAPPING = {
-        GovDataField.JOB_WORKER_GSTIN.value: ITC04_DataField.JOB_WORKER_GSTIN.value,
-        GovDataField.JOB_WORKER_STATE_CODE.value: ITC04_DataField.JOB_WORKER_STATE_CODE.value,
-        GovDataField.ITEMS.value: ITC04_DataField.ITEMS.value,
-        GovDataField.ORIGINAL_CHALLAN_DATE.value: ITC04_DataField.ORIGINAL_CHALLAN_DATE.value,
-        GovDataField.JOB_WORK_CHALLAN_DATE.value: ITC04_DataField.JOB_WORK_CHALLAN_DATE.value,
-        GovDataField.NATURE_OF_JOB.value: ITC04_ItemField.NATURE_OF_JOB.value,
-        GovDataField.UOM.value: ITC04_ItemField.UOM.value,
-        GovDataField.QUANTITY.value: ITC04_ItemField.QUANTITY.value,
-        GovDataField.DESCRIPTION.value: ITC04_ItemField.DESCRIPTION.value,
-        GovDataField.FLAG.value: ITC04_DataField.FLAG.value,
-        GovDataField.LOST_QUANTITY.value: ITC04_ItemField.LOST_QUANTITY.value,
-        GovDataField.LOST_UOM.value: ITC04_ItemField.LOST_UOM.value,
+    KEY_MAPPING: ClassVar[dict] = {
+        RawField.JOB_WORKER_GSTIN.value: ITC04_DataField.JOB_WORKER_GSTIN.value,
+        RawField.JOB_WORKER_STATE_CODE.value: ITC04_DataField.JOB_WORKER_STATE_CODE.value,
+        RawField.ITEMS.value: ITC04_DataField.ITEMS.value,
+        RawField.ORIGINAL_CHALLAN_DATE.value: ITC04_DataField.ORIGINAL_CHALLAN_DATE.value,
+        RawField.JOB_WORK_CHALLAN_DATE.value: ITC04_DataField.JOB_WORK_CHALLAN_DATE.value,
+        RawField.NATURE_OF_JOB.value: ITC04_ItemField.NATURE_OF_JOB.value,
+        RawField.UOM.value: ITC04_ItemField.UOM.value,
+        RawField.QUANTITY.value: ITC04_ItemField.QUANTITY.value,
+        RawField.DESCRIPTION.value: ITC04_ItemField.DESCRIPTION.value,
+        RawField.FLAG.value: ITC04_DataField.FLAG.value,
+        RawField.LOST_QUANTITY.value: ITC04_ItemField.LOST_QUANTITY.value,
+        RawField.LOST_UOM.value: ITC04_ItemField.LOST_UOM.value,
     }
 
     def __init__(self):
         super().__init__()
 
         self.value_formatters_for_internal = {
-            GovDataField.ITEMS.value: self.format_item_for_internal,
-            GovDataField.UOM.value: self.map_uom,
-            GovDataField.LOST_UOM.value: self.map_uom,
-            GovDataField.JOB_WORKER_STATE_CODE.value: self.map_place_of_supply,
+            RawField.ITEMS.value: self.format_item_for_internal,
+            RawField.UOM.value: self.map_uom,
+            RawField.LOST_UOM.value: self.map_uom,
+            RawField.JOB_WORKER_STATE_CODE.value: self.map_place_of_supply,
         }
 
         self.value_formatters_for_gov = {
@@ -103,20 +105,18 @@ class FGReceived(ITC04DataMapper):
         output = {}
 
         for invoice in input_data:
-            original_challan_number = invoice.get(GovDataField.ITEMS.value)[0].get(
-                GovDataField.ORIGINAL_CHALLAN_NUMBER.value
+            original_challan_number = invoice.get(RawField.ITEMS.value)[0].get(
+                RawField.ORIGINAL_CHALLAN_NUMBER.value
             )
-            job_work_challan_number = invoice.get(GovDataField.ITEMS.value)[0].get(
-                GovDataField.JOB_WORK_CHALLAN_NUMBER.value
+            job_work_challan_number = invoice.get(RawField.ITEMS.value)[0].get(
+                RawField.JOB_WORK_CHALLAN_NUMBER.value
             )
-            output[f"{original_challan_number} - {job_work_challan_number}"] = (
-                self.format_data(
-                    invoice,
-                    {
-                        ITC04_DataField.ORIGINAL_CHALLAN_NUMBER.value: original_challan_number,
-                        ITC04_DataField.JOB_WORK_CHALLAN_NUMBER.value: job_work_challan_number,
-                    },
-                )
+            output[f"{original_challan_number} - {job_work_challan_number}"] = self.format_data(
+                invoice,
+                {
+                    ITC04_DataField.ORIGINAL_CHALLAN_NUMBER.value: original_challan_number,
+                    ITC04_DataField.JOB_WORK_CHALLAN_NUMBER.value: job_work_challan_number,
+                },
             )
 
         return {self.CATEGORY: output}
@@ -125,12 +125,8 @@ class FGReceived(ITC04DataMapper):
         output = []
 
         for invoice in input_data:
-            self.original_challan_number = invoice.get(
-                ITC04_DataField.ORIGINAL_CHALLAN_NUMBER.value
-            )
-            self.job_work_challan_number = invoice.get(
-                ITC04_DataField.JOB_WORK_CHALLAN_NUMBER.value
-            )
+            self.original_challan_number = invoice.get(ITC04_DataField.ORIGINAL_CHALLAN_NUMBER.value)
+            self.job_work_challan_number = invoice.get(ITC04_DataField.JOB_WORK_CHALLAN_NUMBER.value)
             output.append(self.format_data(invoice, for_gov=True))
 
         return output
@@ -148,8 +144,8 @@ class FGReceived(ITC04DataMapper):
             self.format_data(
                 item,
                 {
-                    GovDataField.ORIGINAL_CHALLAN_NUMBER.value: self.original_challan_number,
-                    GovDataField.JOB_WORK_CHALLAN_NUMBER.value: self.job_work_challan_number,
+                    RawField.ORIGINAL_CHALLAN_NUMBER.value: self.original_challan_number,
+                    RawField.JOB_WORK_CHALLAN_NUMBER.value: self.job_work_challan_number,
                 },
                 for_gov=True,
             )
@@ -158,24 +154,24 @@ class FGReceived(ITC04DataMapper):
 
 
 class RMSent(ITC04DataMapper):
-    CATEGORY = ITC04JsonKey.RM_SENT.value
+    CATEGORY: ClassVar[str] = ITC04JsonKey.RM_SENT.value
 
-    KEY_MAPPING = {
-        GovDataField.JOB_WORKER_GSTIN.value: ITC04_DataField.JOB_WORKER_GSTIN.value,
-        GovDataField.JOB_WORKER_STATE_CODE.value: ITC04_DataField.JOB_WORKER_STATE_CODE.value,
+    KEY_MAPPING: ClassVar[dict] = {
+        RawField.JOB_WORKER_GSTIN.value: ITC04_DataField.JOB_WORKER_GSTIN.value,
+        RawField.JOB_WORKER_STATE_CODE.value: ITC04_DataField.JOB_WORKER_STATE_CODE.value,
         GovDataField_SE.ITEMS.value: ITC04_DataField.ITEMS.value,
         GovDataField_SE.ORIGINAL_CHALLAN_NUMBER.value: ITC04_DataField.ORIGINAL_CHALLAN_NUMBER.value,
         GovDataField_SE.ORIGINAL_CHALLAN_DATE.value: ITC04_DataField.ORIGINAL_CHALLAN_DATE.value,
-        GovDataField.UOM.value: ITC04_ItemField.UOM.value,
-        GovDataField.QUANTITY.value: ITC04_ItemField.QUANTITY.value,
-        GovDataField.DESCRIPTION.value: ITC04_ItemField.DESCRIPTION.value,
-        GovDataField.TAXABLE_VALUE.value: ITC04_ItemField.TAXABLE_VALUE.value,
-        GovDataField.GOODS_TYPE.value: ITC04_ItemField.GOODS_TYPE.value,
-        GovDataField.IGST.value: ITC04_ItemField.IGST.value,
-        GovDataField.CGST.value: ITC04_ItemField.CGST.value,
-        GovDataField.SGST.value: ITC04_ItemField.SGST.value,
-        GovDataField.CESS_AMOUNT.value: ITC04_ItemField.CESS_AMOUNT.value,
-        GovDataField.FLAG.value: ITC04_DataField.FLAG.value,
+        RawField.UOM.value: ITC04_ItemField.UOM.value,
+        RawField.QUANTITY.value: ITC04_ItemField.QUANTITY.value,
+        RawField.DESCRIPTION.value: ITC04_ItemField.DESCRIPTION.value,
+        RawField.TAXABLE_VALUE.value: ITC04_ItemField.TAXABLE_VALUE.value,
+        RawField.GOODS_TYPE.value: ITC04_ItemField.GOODS_TYPE.value,
+        RawField.IGST.value: ITC04_ItemField.IGST.value,
+        RawField.CGST.value: ITC04_ItemField.CGST.value,
+        RawField.SGST.value: ITC04_ItemField.SGST.value,
+        RawField.CESS_AMOUNT.value: ITC04_ItemField.CESS_AMOUNT.value,
+        RawField.FLAG.value: ITC04_DataField.FLAG.value,
     }
 
     def __init__(self):
@@ -183,8 +179,8 @@ class RMSent(ITC04DataMapper):
 
         self.value_formatters_for_internal = {
             GovDataField_SE.ITEMS.value: self.format_item_for_internal,
-            GovDataField.UOM.value: self.map_uom,
-            GovDataField.JOB_WORKER_STATE_CODE.value: self.map_place_of_supply,
+            RawField.UOM.value: self.map_uom,
+            RawField.JOB_WORKER_STATE_CODE.value: self.map_place_of_supply,
         }
 
         self.value_formatters_for_gov = {
@@ -197,9 +193,7 @@ class RMSent(ITC04DataMapper):
         output = {}
 
         for invoice in input_data:
-            original_challan_number = invoice.get(
-                GovDataField_SE.ORIGINAL_CHALLAN_NUMBER.value
-            )
+            original_challan_number = invoice.get(GovDataField_SE.ORIGINAL_CHALLAN_NUMBER.value)
 
             invoice_level_data = self.format_data(invoice)
 
@@ -222,13 +216,13 @@ class RMSent(ITC04DataMapper):
 
 
 CLASS_MAP = {
-    GovJsonKey.FG_RECEIVED.value: FGReceived,
-    GovJsonKey.RM_SENT.value: RMSent,
+    JsonKey.FG_RECEIVED.value: FGReceived,
+    JsonKey.RM_SENT.value: RMSent,
 }
 
 CATEGORY_MAP = {
-    GovJsonKey.FG_RECEIVED.value: ITC04JsonKey.FG_RECEIVED.value,
-    GovJsonKey.RM_SENT.value: ITC04JsonKey.RM_SENT.value,
+    JsonKey.FG_RECEIVED.value: ITC04JsonKey.FG_RECEIVED.value,
+    JsonKey.RM_SENT.value: ITC04JsonKey.RM_SENT.value,
 }
 
 
@@ -242,9 +236,7 @@ def convert_to_internal_data_format(gov_data):
         if not gov_data.get(category):
             continue
 
-        output.update(
-            mapper_class().convert_to_internal_data_format(gov_data.get(category))
-        )
+        output.update(mapper_class().convert_to_internal_data_format(gov_data.get(category)))
 
     return output
 

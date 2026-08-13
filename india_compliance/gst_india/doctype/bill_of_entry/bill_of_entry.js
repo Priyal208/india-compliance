@@ -4,6 +4,7 @@
 frappe.ui.form.on("Bill of Entry", {
     setup(frm) {
         india_compliance.setup_itc_claim_period_query(frm);
+        india_compliance.set_hsn_code_autocomplete(frm);
     },
 
     onload(frm) {
@@ -27,18 +28,13 @@ frappe.ui.form.on("Bill of Entry", {
                         frm: frm,
                     });
                 },
-                __("Create")
+                __("Create"),
             );
         }
 
-        const has_ineligible_items = frm.doc.items.some(
-            item => item.is_ineligible_for_itc
-        );
+        const has_ineligible_items = frm.doc.items.some((item) => item.is_ineligible_for_itc);
 
-        if (
-            (frm.doc.docstatus === 1 && frm.doc.total_customs_duty > 0) ||
-            has_ineligible_items
-        ) {
+        if ((frm.doc.docstatus === 1 && frm.doc.total_customs_duty > 0) || has_ineligible_items) {
             frm.add_custom_button(
                 __("Landed Cost Voucher"),
                 () => {
@@ -47,7 +43,7 @@ frappe.ui.form.on("Bill of Entry", {
                         frm: frm,
                     });
                 },
-                __("Create")
+                __("Create"),
             );
         }
 
@@ -64,7 +60,7 @@ frappe.ui.form.on("Bill of Entry", {
                 };
                 frappe.set_route("query-report", "General Ledger");
             },
-            __("View")
+            __("View"),
         );
     },
 
@@ -107,10 +103,7 @@ frappe.ui.form.on("Bill of Entry", {
             add_filters_group: 1,
             action: function (selections, args) {
                 if (selections.length === 0) {
-                    frappe.msgprint(
-                        __("Please select at least one Purchase Invoice"),
-                        __("No Selection")
-                    );
+                    frappe.msgprint(__("Please select at least one Purchase Invoice"), __("No Selection"));
                     return;
                 }
 
@@ -176,7 +169,7 @@ class BillOfEntryController {
             },
             { name: "customs_expense_account", filters: { root_type: "Expense" } },
             { name: "cost_center" },
-        ].forEach(row => {
+        ].forEach((row) => {
             this.frm.set_query(row.name, () => {
                 return {
                     filters: {
@@ -191,12 +184,7 @@ class BillOfEntryController {
 
     async update_item_taxable_value(cdt, cdn) {
         const row = locals[cdt][cdn];
-        await frappe.model.set_value(
-            cdt,
-            cdn,
-            "taxable_value",
-            row.assessable_value + row.customs_duty
-        );
+        await frappe.model.set_value(cdt, cdn, "taxable_value", row.assessable_value + row.customs_duty);
         this.update_total_taxable_value();
     }
 
@@ -205,7 +193,7 @@ class BillOfEntryController {
             "total_taxable_value",
             this.frm.doc.items.reduce((total, row) => {
                 return total + row.taxable_value;
-            }, 0)
+            }, 0),
         );
     }
 
@@ -214,14 +202,14 @@ class BillOfEntryController {
             "total_customs_duty",
             this.frm.doc.items.reduce((total, row) => {
                 return total + row.customs_duty;
-            }, 0)
+            }, 0),
         );
     }
 
     update_total_amount_payable() {
         this.frm.set_value(
             "total_amount_payable",
-            this.frm.doc.total_customs_duty + this.frm.doc.total_taxes
+            this.frm.doc.total_customs_duty + this.frm.doc.total_taxes,
         );
     }
 }

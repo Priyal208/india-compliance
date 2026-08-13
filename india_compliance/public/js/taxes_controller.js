@@ -21,6 +21,7 @@ india_compliance.taxes_controller = class TaxesController {
             args: {
                 company: this.frm.doc.company,
                 account_list: [],
+                doc: this.frm.doc,
             },
             callback(r) {
                 if (r.message) {
@@ -32,11 +33,7 @@ india_compliance.taxes_controller = class TaxesController {
 
     setup_queries() {
         this.frm.set_query("item_tax_template", "items", (doc, cdt, cdn) => {
-            return erpnext.TransactionController.prototype.set_query_for_item_tax_template(
-                doc,
-                cdt,
-                cdn
-            );
+            return erpnext.TransactionController.prototype.set_query_for_item_tax_template(doc, cdt, cdn);
         });
 
         this.frm.set_query("account_head", "taxes", () => {
@@ -66,11 +63,11 @@ india_compliance.taxes_controller = class TaxesController {
                     master_doctype: frappe.meta.get_docfield(
                         this.frm.doc.doctype,
                         "taxes_and_charges",
-                        this.frm.doc.name
+                        this.frm.doc.name,
                     ).options,
                     master_name: this.frm.doc.taxes_and_charges,
                 },
-                callback: async r => {
+                callback: async (r) => {
                     if (!r.exc) {
                         this.frm.set_value("taxes", r.message);
                         await this.set_item_wise_tax_rates();
@@ -96,9 +93,9 @@ india_compliance.taxes_controller = class TaxesController {
         if (tax_row) taxes = [tax_row];
         else taxes = this.frm.doc.taxes;
 
-        taxes.forEach(tax => {
+        taxes.forEach((tax) => {
             const item_wise_tax_rates = JSON.parse(tax.item_wise_tax_rates || "{}");
-            this.frm.doc.items.forEach(item => {
+            (this.frm.doc.items || []).forEach((item) => {
                 if (item.item_tax_template) return;
                 item_wise_tax_rates[item.name] = tax.rate;
             });
@@ -133,13 +130,19 @@ india_compliance.taxes_controller = class TaxesController {
 
         // Function to calculate amount
         const calculateAmount = (qty, rate, precisionType) => {
-            return flt(flt(qty) * flt(rate), precision(precisionType, row));
+            let amount = flt(flt(qty) * flt(rate), precision(precisionType, row));
+
+            if (this.frm.doc.doctype === "Stock Entry") {
+                amount += flt(row.additional_taxable_value, precision(precisionType, row));
+            }
+            return amount;
         };
 
-        if (this.frm.doc.doctype === "Subcontracting Receipt") {
-            amount = calculateAmount(row.qty, row.rate, "amount");
-        } else if (this.frm.doc.doctype === "Stock Entry") {
+        if (this.frm.doc.doctype === "Stock Entry") {
             amount = calculateAmount(row.transfer_qty, row.basic_rate, "basic_amount");
+        } else {
+            // Subcontracting Order / Subcontracting Receipt use qty * rate
+            amount = calculateAmount(row.qty, row.rate, "amount");
         }
 
         row.taxable_value = amount;
@@ -154,13 +157,17 @@ india_compliance.taxes_controller = class TaxesController {
         let total_taxes = 0;
         const total_taxable_value = this.calculate_total_taxable_value();
 
-        this.frm.doc.taxes.forEach(async row => {
-            if (!row.charge_type || row.charge_type === "Actual") return;
+        this.frm.doc.taxes.forEach(async (row) => {
+            if (!row.charge_type) return;
 
-            row.tax_amount = this.get_tax_amount(row);
+            if (row.charge_type === "Actual") {
+                row.tax_amount = flt(row.tax_amount);
+            } else {
+                row.tax_amount = this.get_tax_amount(row);
 
-            if (frappe.flags.round_off_applicable_accounts?.includes(row.account_head))
-                row.tax_amount = Math.round(row.tax_amount);
+                if (frappe.flags.round_off_applicable_accounts?.includes(row.account_head))
+                    row.tax_amount = Math.round(row.tax_amount);
+            }
 
             total_taxes += row.tax_amount;
             row.base_total = total_taxes + total_taxable_value;
@@ -173,8 +180,7 @@ india_compliance.taxes_controller = class TaxesController {
     }
 
     update_base_grand_total() {
-        const grand_total =
-            this.calculate_total_taxable_value() + this.get_value("total_taxes");
+        const grand_total = this.calculate_total_taxable_value() + this.get_value("total_taxes");
 
         const field_name = this.get_fieldname("base_grand_total");
         if (this.frm.fields_dict[field_name]) {
@@ -183,10 +189,7 @@ india_compliance.taxes_controller = class TaxesController {
     }
 
     update_total_taxes() {
-        const total_taxes = this.frm.doc.taxes.reduce(
-            (total, row) => total + row.tax_amount,
-            0
-        );
+        const total_taxes = this.frm.doc.taxes.reduce((total, row) => total + row.tax_amount, 0);
         this.frm.set_value("total_taxes", total_taxes);
     }
 
@@ -197,22 +200,17 @@ india_compliance.taxes_controller = class TaxesController {
 
         const item_wise_tax_rates = JSON.parse(tax_row.item_wise_tax_rates || "{}");
         return (
-            this.frm.doc.items.reduce((total, item) => {
+            (this.frm.doc.items || []).reduce((total, item) => {
                 let multiplier =
-                    item.charge_type === "On Item Quantity"
-                        ? item.qty
-                        : item.taxable_value / 100;
-                return (
-                    total +
-                    multiplier * (item_wise_tax_rates[item.name] || tax_row.rate)
-                );
+                    tax_row.charge_type === "On Item Quantity" ? item.qty : item.taxable_value / 100;
+                return total + multiplier * (item_wise_tax_rates[item.name] || tax_row.rate);
             }, 0) || 0
         );
     }
 
     calculate_total_taxable_value() {
         return (
-            this.frm.doc.items.reduce((total, item) => {
+            (this.frm.doc.items || []).reduce((total, item) => {
                 return total + item.taxable_value;
             }, 0) || 0
         );

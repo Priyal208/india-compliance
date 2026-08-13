@@ -1,11 +1,49 @@
 frappe.provide("reconciliation");
 
+// what each match type covers, shown on hover. key order is the order they are listed in
+const MATCH_STATUS_INFO = {
+    "Exact Match": __("Bill no, GSTIN, place of supply, reverse charge and every tax amount are the same."),
+    "Suggested Match": __(
+        "Same invoice with small gaps. Bill no is close, or tax amounts differ by up to 1 rupee.",
+    ),
+    Mismatch: __(
+        "Same supplier and fiscal year, but the two disagree on bill no, GSTIN, place of supply, reverse charge or tax amounts.",
+    ),
+    "Manual Match": __("You linked these two documents yourself."),
+    "Only in 2A/2B": __("Supplier has reported it. Not in your books."),
+    "Only in Books": __("You have booked it. Supplier has not reported it in 2A/2B."),
+    "Suggested Mark as Pending": __("Belongs to a later period. Keep it pending and claim it then."),
+};
+
+function get_gstin_status_at_invoice_date(row) {
+    if (
+        row.gstin_status === "Cancelled" &&
+        row.gstin_cancelled_date &&
+        row.bill_date &&
+        frappe.datetime.str_to_obj(row.bill_date) < frappe.datetime.str_to_obj(row.gstin_cancelled_date)
+    ) {
+        return "Active";
+    }
+    return row.gstin_status;
+}
+
+function get_gstin_indicator_color(status) {
+    if (status === "Active") return "green";
+    if (status === "Cancelled") return "red";
+    if (status === "Suspended") return "orange";
+    return "grey";
+}
+
 reconciliation.reconciliation_tabs = class ReconciliationTabs {
+    // summary tab -> how its rows pick invoices. set by each tool
+    summary_matchers = {};
+
     constructor(frm, tabs, data_field) {
         this.frm = frm;
         this.data = [];
         this._tabs = tabs;
-        this.$wrapper = frm.get_field(data_field).$wrapper;
+        this.$wrapper = frm.get_field(data_field).$wrapper.addClass("gst-return-tabs");
+        frm.$wrapper.addClass("gst-return-tool");
 
         this.render_tab_group();
         this.setup_filter_button(frm.doctype);
@@ -32,7 +70,7 @@ reconciliation.reconciliation_tabs = class ReconciliationTabs {
         // data unchanged!
         if (this.rendered_data == this.filtered_data) return;
 
-        this._tabs.forEach(tab => {
+        this._tabs.forEach((tab) => {
             this.tabs[`${tab}_tab`].datatable?.refresh(this[`get_${tab}_data`]());
         });
 
@@ -51,9 +89,7 @@ reconciliation.reconciliation_tabs = class ReconciliationTabs {
         this.tab_group.make();
 
         // make tabs_dict for easy access
-        this.tabs = Object.fromEntries(
-            this.tab_group.tabs.map(tab => [tab.df.fieldname, tab])
-        );
+        this.tabs = Object.fromEntries(this.tab_group.tabs.map((tab) => [tab.df.fieldname, tab]));
     }
 
     get_tab_group_fields() {
@@ -78,7 +114,7 @@ reconciliation.reconciliation_tabs = class ReconciliationTabs {
         const fields = [];
         const dimension_fields = this.get_accounting_dimensions();
 
-        dimension_fields.forEach(dimension => {
+        dimension_fields.forEach((dimension) => {
             const label = frappe.unscrub(dimension);
             fields.push({
                 label,
@@ -104,12 +140,9 @@ reconciliation.reconciliation_tabs = class ReconciliationTabs {
         if (!force && this.filters === filters) return;
 
         this.filters = filters;
-        this.filtered_data = this.data.filter(row => {
-            return filters.every(filter =>
-                india_compliance.FILTER_OPERATORS[filter[2]](
-                    filter[3] || "",
-                    row[filter[1]] || ""
-                )
+        this.filtered_data = this.data.filter((row) => {
+            return filters.every((filter) =>
+                india_compliance.FILTER_OPERATORS[filter[2]](filter[3] || "", row[filter[1]] || ""),
             );
         });
     }
@@ -120,14 +153,14 @@ reconciliation.reconciliation_tabs = class ReconciliationTabs {
 
     get_autocomplete_options(field) {
         const options = [];
-        this.data.forEach(row => {
+        this.data.forEach((row) => {
             if (row[field] && !options.includes(row[field])) options.push(row[field]);
         });
         return options;
     }
 
     render_data_tables() {
-        this._tabs.forEach(tab => {
+        this._tabs.forEach((tab) => {
             this.tabs[`${tab}_tab`].datatable = new india_compliance.DataTableManager({
                 $wrapper: this.tab_group.get_field(`${tab}_data`).$wrapper,
                 columns: this[`get_${tab}_columns`](),
@@ -140,14 +173,49 @@ reconciliation.reconciliation_tabs = class ReconciliationTabs {
         this.set_listeners();
     }
 
+    // holds a column in a fixed order, anything unlisted goes last
+    sort_by_order(rows, field, order) {
+        const rank = (value) => {
+            const index = order.indexOf(value);
+            return index === -1 ? order.length : index;
+        };
+
+        return rows.sort((a, b) => rank(a[field]) - rank(b[field]));
+    }
+
+    // every tab lists match statuses in the same order
+    sort_by_match_status(rows) {
+        return this.sort_by_order(rows, "match_status", Object.keys(MATCH_STATUS_INFO));
+    }
+
+    // supplier and document tabs go by gstin, then oldest bill first
+    sort_by_supplier_gstin(rows) {
+        const text = (row, field) => String(row[field] || "");
+
+        return rows.sort(
+            (a, b) =>
+                text(a, "supplier_gstin").localeCompare(text(b, "supplier_gstin")) ||
+                text(a, "bill_date").localeCompare(text(b, "bill_date")) ||
+                text(a, "bill_no").localeCompare(text(b, "bill_no")),
+        );
+    }
+
+    get_match_status_link(match_status) {
+        const info = MATCH_STATUS_INFO[match_status] || "";
+        return `<a href="#" class="match-status" title="${frappe.utils.escape_html(
+            info,
+        )}">${match_status}</a>`;
+    }
+
     get_supplier_name_gstin(row) {
-        return `
-        ${row.supplier_name}
-        <br />
-        <a href="#" style="font-size: 0.9em;" class="supplier-gstin">
-            ${row.supplier_gstin || ""}
-        </a>
-        `;
+        const status = get_gstin_status_at_invoice_date(row);
+        const gstin_link = $(
+            `<a href="#" style="font-size: 0.9em;" class="supplier-gstin">${row.supplier_gstin || ""}</a>`,
+        )
+            .addClass(`indicator ${get_gstin_indicator_color(status)}`)
+            .attr("title", status || "Unknown")
+            .prop("outerHTML");
+        return `${row.supplier_name}<br />${gstin_link}`;
     }
 
     get_value_with_indicator(value, column, data) {
@@ -161,23 +229,18 @@ reconciliation.reconciliation_tabs = class ReconciliationTabs {
             title = "Supplier Return: Not Filed";
         }
 
-        value = $(value)
-            .addClass(`indicator ${color}`)
-            .attr("title", title)
-            .prop("outerHTML");
+        value = $(value).addClass(`indicator ${color}`).attr("title", title).prop("outerHTML");
 
         return value;
     }
 
     get_accounting_dimensions() {
         let options = ["cost_center", "project"];
-        frappe.db
-            .get_list("Accounting Dimension", { fields: ["fieldname"] })
-            .then(res => {
-                res.forEach(dimension => {
-                    options.push(dimension.document_type);
-                });
+        frappe.db.get_list("Accounting Dimension", { fields: ["fieldname"] }).then((res) => {
+            res.forEach((dimension) => {
+                options.push(dimension.document_type);
             });
+        });
         return options;
     }
 };
@@ -225,7 +288,7 @@ reconciliation.detail_view_dialog = class DetailViewDialog {
             const doc = this.data[key];
             if (!doc) continue;
 
-            this.table_fields.forEach(field => {
+            this.table_fields.forEach((field) => {
                 if (field == "is_reverse_charge" && doc[field] != undefined)
                     doc[field] = doc[field] ? "Yes" : "No";
             });
@@ -233,11 +296,26 @@ reconciliation.detail_view_dialog = class DetailViewDialog {
     }
 
     init_dialog() {
-        const supplier_details = `
-        <h5>${this.row.supplier_name}
-        ${this.row.supplier_gstin ? ` (${this.row.supplier_gstin})` : ""}
-        </h5>
-        `;
+        let gstin_text = "";
+        if (this.row.supplier_gstin) {
+            const status = get_gstin_status_at_invoice_date(this.row);
+            const color = get_gstin_indicator_color(status);
+            let note = "";
+            if (
+                status === "Active" &&
+                this.row.gstin_status === "Cancelled" &&
+                this.row.gstin_cancelled_date
+            ) {
+                note = ` <span> — Currently Cancelled since ${frappe.datetime.str_to_user(
+                    this.row.gstin_cancelled_date,
+                )}</span>`;
+            } else if (status === "Cancelled" && this.row.gstin_cancelled_date) {
+                note = ` <span>since ${frappe.datetime.str_to_user(this.row.gstin_cancelled_date)}</span>`;
+            }
+            const status_html = ` — <span class="indicator ${color}">${status || "Unknown"}</span>${note}`;
+            gstin_text = ` (${this.row.supplier_gstin}${status_html})`;
+        }
+        const supplier_details = `<h5>${this.row.supplier_name}${gstin_text}</h5>`;
 
         this.dialog = new frappe.ui.Dialog({
             title: `Detail View (${this.row.classification})`,
@@ -258,6 +336,7 @@ reconciliation.detail_view_dialog = class DetailViewDialog {
                 },
             ],
         });
+
         this.set_link_options();
     }
 
@@ -277,7 +356,6 @@ reconciliation.detail_view_dialog = class DetailViewDialog {
                 label: "Date Range",
                 fieldtype: "DateRange",
                 fieldname: "date_range",
-                default: this._get_default_date_range(),
                 onchange: () => this.set_link_options(),
             },
             {
@@ -319,10 +397,13 @@ reconciliation.detail_view_dialog = class DetailViewDialog {
     async set_link_options(method) {
         if (!this.dialog.get_value("doctype")) return;
 
+        // left blank on purpose, the server falls back to its own window
+        const date_range = this.dialog.get_value("date_range") || [];
+
         this.filters = {
             supplier_gstin: this.dialog.get_value("supplier_gstin"),
-            bill_from_date: this.dialog.get_value("date_range")[0],
-            bill_to_date: this.dialog.get_value("date_range")[1],
+            from_date: date_range[0],
+            to_date: date_range[1],
             show_matched: this.dialog.get_value("show_matched"),
             purchase_doctype: this.data.purchase_doctype,
         };
@@ -332,33 +413,38 @@ reconciliation.detail_view_dialog = class DetailViewDialog {
             filters: this.filters,
         });
 
-        this.dialog.get_field("link_with").set_data(message);
+        const { options, filters } = message;
+        const field = this.dialog.get_field("link_with");
+        field.set_data(options);
+        field.set_description(this._get_filter_note(filters, options.length));
+    }
+
+    // says what the server filtered on, including dates it filled in for a blank range
+    _get_filter_note({ from_date, to_date, show_matched }, count) {
+        const scope = show_matched ? __("All") : __("Unmatched");
+        const dates = [from_date, to_date].filter(Boolean).map((d) => frappe.datetime.str_to_user(d));
+        const note = dates.length == 2 ? __("{0} between {1} to {2}", [scope, ...dates]) : scope;
+
+        return count ? note : `${__("No documents found.")} ${note}`;
     }
 
     _set_missing_doctype() {}
 
-    _get_default_date_range() {
-        const now = frappe.datetime.now_date();
-        return [frappe.datetime.add_months(now, -12), now];
-    }
-
     setup_actions() {
         const actions = this._get_custom_actions();
 
-        actions.forEach(action => {
+        actions.forEach((action) => {
             this.dialog.add_custom_action(
                 action,
                 () => {
                     this._apply_custom_action(action);
                     this.dialog.hide();
                 },
-                `mr-2 ${this._get_button_css(action)}`
+                `mr-2 ${this._get_button_css(action)}`,
             );
         });
 
-        this.dialog.$wrapper
-            .find(".btn.btn-secondary.not-grey")
-            .removeClass("btn-secondary");
+        this.dialog.$wrapper.find(".btn.btn-secondary.not-grey").removeClass("btn-secondary");
         this.dialog.$wrapper.find(".modal-footer").css("flex-direction", "inherit");
     }
 
@@ -383,8 +469,7 @@ reconciliation.detail_view_dialog = class DetailViewDialog {
         const field = this.dialog.get_field("link_with");
         if (field.value) this.toggle_link_btn(false);
 
-        if (this.missing_doctype == "GST Inward Supply")
-            this.row.inward_supply_name = field.value;
+        if (this.missing_doctype == "GST Inward Supply") this.row.inward_supply_name = field.value;
         else this.row.purchase_invoice_name = field.value;
 
         await this.get_invoice_details();
@@ -406,18 +491,14 @@ reconciliation.detail_view_dialog = class DetailViewDialog {
                 label: "Tax Difference",
                 datatype: "Currency",
                 currency: frappe.boot.sysdefaults.currency,
-                indicator:
-                    this.row.tax_difference === 0 ? "text-success" : "text-danger",
+                indicator: this.row.tax_difference === 0 ? "text-success" : "text-danger",
             },
             {
                 value: this.row.taxable_value_difference,
                 label: "Taxable Amount Difference",
                 datatype: "Currency",
                 currency: frappe.boot.sysdefaults.currency,
-                indicator:
-                    this.row.taxable_value_difference === 0
-                        ? "text-success"
-                        : "text-danger",
+                indicator: this.row.taxable_value_difference === 0 ? "text-success" : "text-danger",
             },
         ];
 
@@ -436,22 +517,26 @@ reconciliation.detail_view_dialog = class DetailViewDialog {
             frappe.render_template("invoice_detail_comparison", {
                 purchase: this.data._purchase_invoice,
                 inward_supply: this.data._inward_supply,
-            })
+            }),
         );
-        detail_table.$wrapper.removeClass("not-matched");
-        this._set_value_color(detail_table.$wrapper);
+        this._mark_differences(detail_table.$wrapper);
     }
 
-    _set_value_color(wrapper) {
+    _mark_differences(wrapper) {
         if (!this.row.purchase_invoice_name || !this.row.inward_supply_name) return;
 
-        ["place_of_supply", "is_reverse_charge"].forEach(field => {
-            if (this.data._purchase_invoice[field] == this.data._inward_supply[field])
-                return;
+        // template marks the rows worth comparing
+        wrapper.find("[data-compare]").each((_index, row) => {
+            const field = $(row).data("compare");
+            const purchase = this.data._purchase_invoice[field];
+            const inward_supply = this.data._inward_supply[field];
 
-            wrapper
-                .find(`[data-label='${field}'], [data-label='${field}']`)
-                .addClass("not-matched");
+            const same =
+                typeof purchase === "number" || typeof inward_supply === "number"
+                    ? flt(purchase, 2) === flt(inward_supply, 2)
+                    : purchase == inward_supply;
+
+            if (!same) $(row).attr("title", __("Books and 2A/2B do not match")).addClass("not-matched");
         });
     }
 };

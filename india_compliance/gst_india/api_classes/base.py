@@ -1,10 +1,10 @@
 import copy
 from base64 import b64decode
-from urllib.parse import urljoin
-
-import requests
+from typing import ClassVar
+from urllib.parse import quote, urljoin
 
 import frappe
+import requests
 from frappe import _
 from frappe.utils import sbool
 from frappe.utils.scheduler import is_scheduler_disabled
@@ -18,13 +18,14 @@ from india_compliance.gst_india.utils import is_api_enabled
 from india_compliance.gst_india.utils.api import enqueue_integration_request
 
 BASE_URL = "https://asp.resilient.tech"
+DEFAULT_SUPPORT_EMAIL = "api-support@indiacompliance.app"
 
 
 class BaseAPI:
     API_NAME = "GST"
     BASE_PATH = ""
     PLACEHOLDER = "*****"
-    DEFAULT_MASK_MAP = {
+    DEFAULT_MASK_MAP: ClassVar[dict] = {
         "headers": [
             "x-api-key",
             "auth-token",
@@ -49,11 +50,7 @@ class BaseAPI:
     def __init__(self, *args, **kwargs):
         self.settings = frappe.get_cached_doc("GST Settings")
         if not is_api_enabled(self.settings):
-            frappe.throw(
-                _("Please enable API in GST Settings to use the {0} API").format(
-                    self.API_NAME
-                )
-            )
+            frappe.throw(_("Please enable API in GST Settings to use the {0} API").format(self.API_NAME))
 
         self.company_gstin = None
         self.auth_strategy = None
@@ -65,6 +62,7 @@ class BaseAPI:
             )
         }
         self.default_log_values = {}
+        self.support_email = None
 
         self.setup(*args, **kwargs)
 
@@ -79,8 +77,7 @@ class BaseAPI:
         else:
             frappe.throw(
                 _(
-                    "Please set the relevant credentials for GSTIN {0} in GST Settings to use the"
-                    " {1} API"
+                    "Please set the relevant credentials for GSTIN {0} in GST Settings to use the {1} API"
                 ).format(gstin, self.API_NAME),
                 frappe.DoesNotExistError,
                 title=_("Credentials Unavailable"),
@@ -190,9 +187,7 @@ class BaseAPI:
                     response_json = response.content
 
                 else:
-                    frappe.throw(
-                        _("Error parsing response: {0}").format(response.content)
-                    )
+                    frappe.throw(_("Error parsing response: {0}").format(response.content))
 
             response_json = self.process_response(response_json)
 
@@ -255,7 +250,7 @@ class BaseAPI:
                 title=_("API Request Failed"),
             )
 
-    ERROR_MESSAGES = {
+    ERROR_MESSAGES: ClassVar[dict] = {
         GSPServerError: (
             "GSPGSTDOWN",
             "GSPERR300",
@@ -282,14 +277,11 @@ class BaseAPI:
     def handle_http_code(self, status_code, response_json):
         # GSP connectivity issues
         if status_code == 401 or (
-            status_code == 403
-            and response_json
-            and response_json.get("error") == "access_denied"
+            status_code == 403 and response_json and response_json.get("error") == "access_denied"
         ):
             frappe.throw(
-                _(
-                    "Error establishing connection to GSP. Please contact India"
-                    " Compliance API support at <strong>api-support@indiacompliance.app</strong>."
+                _("Error establishing connection to GSP.<br><br>Please contact support at {0}").format(
+                    frappe.bold(self.get_support_email_link(error=response_json))
                 ),
                 title=_("GSP Connection Error"),
             )
@@ -310,6 +302,23 @@ class BaseAPI:
         if status_code == 504:
             raise GatewayTimeoutError
 
+    def get_support_email_link(self, subject="Error establishing connection to GSP", error=None):
+        email = self.support_email or DEFAULT_SUPPORT_EMAIL
+
+        if company := getattr(self, "company", None):
+            subject = f"{subject} - {company}"
+
+        if error:
+            body = f"Hello India Compliance Team,\n\n\n{error}\n"
+        else:
+            body = (
+                "Hello India Compliance Team,\n\n\n// Please describe the issue and paste the error here...\n"
+            )
+
+        # &amp; keeps the href valid HTML.
+        mailto = f"mailto:{email}?subject={quote(subject)}&amp;body={quote(body)}"
+        return f'<a href="{mailto}">{email}</a>'
+
     def generate_request_id(self, length=12):
         return f"IC{frappe.generate_hash(length=length - 2)}".upper()
 
@@ -322,9 +331,7 @@ class BaseAPI:
         # Define specific locations where each type of sensitive info should be masked
         sensitive_info_mapping = self._get_sensitive_info_mapping()
 
-        self._mask_sensitive_info(
-            request_headers, sensitive_info_mapping.get("headers")
-        )
+        self._mask_sensitive_info(request_headers, sensitive_info_mapping.get("headers"))
 
         self._mask_sensitive_info(output, sensitive_info_mapping.get("output"))
         self._mask_sensitive_info(data, sensitive_info_mapping.get("data"))

@@ -4,7 +4,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import get_link_to_form
+from frappe.utils import flt, get_link_to_form
 
 from india_compliance.gst_india.constants import ORIGINAL_VS_AMENDED
 
@@ -21,9 +21,7 @@ class GSTInwardSupply(Document):
         if self.previous_ims_action and not self.get("ims_action"):
             self.ims_action = self.previous_ims_action
 
-        if self.match_status != "Amended" and (
-            self.other_return_period or self.is_amended
-        ):
+        if self.match_status != "Amended" and (self.other_return_period or self.is_amended):
             update_docs_for_amendment(self)
 
     def on_trash(self):
@@ -44,17 +42,40 @@ def create_inward_supply(transaction):
         "supplier_gstin": transaction.supplier_gstin,
     }
 
+    # flat records (TDS/TCS) have no bill no/date; key them by period so a later
+    # period doesn't overwrite an earlier one
+    if not transaction.bill_no:
+        filters["sup_return_period"] = transaction.sup_return_period
+
     if name := frappe.get_value("GST Inward Supply", filters):
         gst_inward_supply = frappe.get_doc("GST Inward Supply", name)
+        preserve_pending_itc_declaration(gst_inward_supply, transaction)
     else:
         gst_inward_supply = frappe.new_doc("GST Inward Supply")
 
-    update_reco_action(
-        gst_inward_supply.link_name, gst_inward_supply.action, transaction
-    )
+    update_reco_action(gst_inward_supply.link_name, gst_inward_supply.action, transaction)
 
     gst_inward_supply.update(transaction)
     return gst_inward_supply.save(ignore_permissions=True)
+
+
+def preserve_pending_itc_declaration(existing, transaction):
+    # keep our un-uploaded declaration; portal sends stale values till we upload
+    if not (existing.ims_action and existing.ims_action != existing.previous_ims_action):
+        return
+
+    numeric = ("itc_reduction_required", "declared_igst", "declared_cgst", "declared_sgst", "declared_cess")
+    # portal already matches ours -> nothing pending
+    if all(flt(existing.get(f)) == flt(transaction.get(f)) for f in numeric) and (
+        existing.get("remarks") or ""
+    ) == (transaction.get("remarks") or ""):
+        return
+
+    for field in (*numeric, "remarks"):
+        transaction.pop(field, None)
+
+    # ours differs -> keep it and re-upload
+    transaction["is_declaration_pending_upload"] = 1
 
 
 def update_reco_action(linked_doc, reco_action, transaction):
@@ -86,8 +107,11 @@ def update_previous_ims_action(transaction):
     frappe.db.set_value(
         "GST Inward Supply",
         filters,
-        "previous_ims_action",
-        transaction.previous_ims_action or "No Action",
+        {
+            "previous_ims_action": transaction.previous_ims_action or "No Action",
+            # uploaded -> declaration in sync
+            "is_declaration_pending_upload": 0,
+        },
     )
 
 
@@ -136,14 +160,10 @@ def update_docs_for_amendment(doc):
             and original.link_name != doc.name
             and doc.is_new()
         ):
-            frappe.db.set_value(
-                "GST Inward Supply", original.name, "link_name", doc.name
-            )
+            frappe.db.set_value("GST Inward Supply", original.name, "link_name", doc.name)
 
             # new original
-            original = frappe.db.get_value(
-                "GST Inward Supply", original.link_name, fields
-            )
+            original = frappe.db.get_value("GST Inward Supply", original.link_name, fields)
 
         if original.match_status == "Amended":
             return

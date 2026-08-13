@@ -3,7 +3,7 @@
 
 import frappe
 from frappe import _
-from frappe.query_builder.custom import GROUP_CONCAT
+from frappe.query_builder.functions import GroupConcat, Max
 
 
 def execute(filters=None):
@@ -21,17 +21,12 @@ def validate_filters(filters=None):
 
     if not filters.company:
         frappe.throw(
-            _("{} is mandatory for generating Bill of Entry Summary Report").format(
-                _("Company")
-            ),
+            _("{} is mandatory for generating Bill of Entry Summary Report").format(_("Company")),
             title=_("Invalid Filter"),
         )
     if not filters.from_date or not filters.to_date:
         frappe.throw(
-            _(
-                "From Date & To Date is mandatory for generating Bill of Entry Summary"
-                " Report"
-            ),
+            _("From Date & To Date is mandatory for generating Bill of Entry Summary Report"),
             title=_("Invalid Filter"),
         )
     if filters.from_date > filters.to_date:
@@ -56,11 +51,7 @@ def get_data(filters):
             bill_of_entry.total_amount_payable,
         )
         .where(bill_of_entry.docstatus == 1)
-        .where(
-            bill_of_entry.bill_of_entry_date[
-                filters.get("from_date") : filters.get("to_date")
-            ]
-        )
+        .where(bill_of_entry.bill_of_entry_date[filters.get("from_date") : filters.get("to_date")])
         .where(bill_of_entry.company == filters.get("company"))
     )
 
@@ -76,7 +67,7 @@ def update_journal_entry_for_payment(query):
     return (
         query.left_join(journal_entry_account)
         .on(bill_of_entry.name == journal_entry_account.reference_name)
-        .select(journal_entry_account.parent.as_("payment_journal_entry"))
+        .select(Max(journal_entry_account.parent).as_("payment_journal_entry"))
     )
 
 
@@ -91,17 +82,15 @@ def update_purchase_invoice_query(query):
         .left_join(purchase_invoice)
         .on(purchase_invoice.name == bill_of_entry_item.purchase_invoice)
         .select(
-            GROUP_CONCAT(purchase_invoice.name, ",").as_("purchase_invoice"),
-            purchase_invoice.supplier,
+            GroupConcat(purchase_invoice.name, ",").as_("purchase_invoice"),
+            Max(purchase_invoice.supplier).as_("supplier"),
         )
         .groupby(bill_of_entry.name)
     )
 
 
 def get_columns(filters):
-    company_currency = frappe.get_cached_value(
-        "Company", filters.get("company"), "default_currency"
-    )
+    company_currency = frappe.get_cached_value("Company", filters.get("company"), "default_currency")
 
     return [
         {

@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import frappe
 from frappe import _
 
@@ -8,7 +10,7 @@ from india_compliance.gst_india.api_classes.taxpayer_base import (
 
 
 class ReturnsAPI(TaxpayerBaseAPI):
-    IGNORED_ERROR_CODES = {
+    IGNORED_ERROR_CODES: ClassVar[dict] = {
         **TaxpayerBaseAPI.IGNORED_ERROR_CODES,
         "RET11416": "no_docs_found",
         "RET12501": "no_docs_found",  # random `system failure` for CDNR
@@ -19,6 +21,7 @@ class ReturnsAPI(TaxpayerBaseAPI):
         "RET2B1016": "no_docs_found",
         "RT-3BAS1009": "no_docs_found",
         "RET11417": "no_docs_found",  # GSTR-1 Exports
+        "RETWEB_04": "no_docs_found",  # GSTR-1 SUPECO
         "RET2B1018": "requested_before_cutoff_date",
         "RTN_24": "queued",
         "RET11402": "authorization_failed",  # API Authorization Failed for 2A
@@ -28,12 +31,11 @@ class ReturnsAPI(TaxpayerBaseAPI):
         # "IMS2B007": "not_applicable", # Either the entered ITC period is incorrect or it has 3B filed
         "IMS2005": "not_needed",  # 2B cannot be generated as there are no changes
         # "IMSSAV0015": # Previous Save or Reset request is already under progress. Please try after some time.
+        "RTNECO-01": "not_applicable",  # Supplies made through E-Commerce Operators is not applicable for the return period.
     }
 
     def download_files(self, return_period, token):
-        return super().get_files(
-            return_period, token, action="FILEDET", endpoint="returns"
-        )
+        return super().get_files(return_period, token, action="FILEDET", endpoint="returns")
 
     def get_return_status(self, return_period, reference_id, otp=None):
         return self.get(
@@ -347,9 +349,7 @@ class IMSAPI(ReturnsAPI):
         )
 
     def download_files(self, return_period, token):
-        return self.get_files(
-            return_period, token, action="FILEDET", endpoint=self.END_POINT
-        )
+        return self.get_files(return_period, token, action="FILEDET", endpoint=self.END_POINT)
 
     def get_files(self, return_period, token, action, endpoint):
         response = self.get(

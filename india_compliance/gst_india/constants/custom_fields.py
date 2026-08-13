@@ -47,6 +47,18 @@ party_fields = [
     },
 ]
 
+transaction_hsn_code_field = {
+    "fieldname": "gst_hsn_code",
+    "label": "HSN/SAC",
+    "fieldtype": "Autocomplete",
+    "fetch_from": "item_code.gst_hsn_code",
+    "insert_after": "description",
+    "allow_on_submit": 1,
+    "print_hide": 1,
+    "fetch_if_empty": 1,
+    "translatable": 0,
+}
+
 CUSTOM_FIELDS = {
     # Subcontracting: Tax Fields
     "Subcontracting Order": [
@@ -168,6 +180,7 @@ CUSTOM_FIELDS = {
             "fieldtype": "Currency",
             "insert_after": "section_break_total",
             "read_only": 1,
+            "options": "Company:company:default_currency",
         },
         {
             "fieldtype": "Column Break",
@@ -180,7 +193,7 @@ CUSTOM_FIELDS = {
             "fieldtype": "Currency",
             "insert_after": "cb_grand_total",
             "read_only": 1,
-            "options": "currency",
+            "options": "Company:company:default_currency",
         },
     ],
     # Stock Entry: Address and Tax Fields
@@ -480,14 +493,6 @@ CUSTOM_FIELDS = {
             "fetch_from": "",
         },
         {
-            "fieldname": "is_reverse_charge",
-            "label": "Is Reverse Charge",
-            "fieldtype": "Check",
-            "insert_after": "apply_tds",
-            "print_hide": 1,
-            "default": "0",
-        },
-        {
             "fieldname": "section_gst_breakup",
             "label": "GST Breakup",
             "fieldtype": "Section Break",
@@ -518,15 +523,17 @@ CUSTOM_FIELDS = {
         "translatable": 0,
     },
     # Sales - GST Details Section
-    ("Sales Order", "Delivery Note", "Sales Invoice"): [
+    "Sales Order": [
         {
             "fieldname": "gst_section",
             "label": "GST Details",
             "fieldtype": "Section Break",
-            "insert_after": "gst_vehicle_type",
+            "insert_after": "language",
             "print_hide": 1,
             "collapsible": 1,
         },
+    ],
+    ("Sales Order", "Delivery Note", "Sales Invoice"): [
         {
             "fieldname": "ecommerce_gstin",
             "label": "E-commerce GSTIN",
@@ -623,8 +630,17 @@ CUSTOM_FIELDS = {
             "translatable": 0,
         },
     ],
-    # Sales Shipping Fields
     ("Delivery Note", "Sales Invoice"): [
+        # Sales - GST Details Section
+        {
+            "fieldname": "gst_section",
+            "label": "GST Details",
+            "fieldtype": "Section Break",
+            "insert_after": "gst_vehicle_type",
+            "print_hide": 1,
+            "collapsible": 1,
+        },
+        # Sales Shipping Fields
         {
             "fieldname": "port_address",
             "label": "Origin Port / Border Checkpost Address Name",
@@ -688,19 +704,7 @@ CUSTOM_FIELDS = {
         }
     ],
     # Transaction Item: Tax Fields
-    "Material Request Item": [
-        {
-            "fieldname": "gst_hsn_code",
-            "label": "HSN/SAC",
-            "fieldtype": "Data",
-            "fetch_from": "item_code.gst_hsn_code",
-            "insert_after": "description",
-            "allow_on_submit": 1,
-            "print_hide": 1,
-            "fetch_if_empty": 1,
-            "translatable": 0,
-        },
-    ],
+    "Material Request Item": [transaction_hsn_code_field],
     # Taxable Value
     (
         "Supplier Quotation Item",
@@ -753,6 +757,20 @@ CUSTOM_FIELDS = {
             "print_hide": 1,
             "hidden": 0,
         },
+        {
+            "fieldname": "additional_taxable_value",
+            "label": "Additional Taxable Value",
+            "fieldtype": "Currency",
+            "insert_after": "taxable_value",
+            "options": "Company:company:default_currency",
+            "read_only": 1,
+            "translatable": 0,
+            "no_copy": 1,
+            "print_hide": 1,
+            "hidden": 0,
+            "depends_on": "eval:india_compliance.SUBCONTRACTING_INWARD_PURPOSES.includes(parent.purpose)",
+            "description": "Value of customer-provided materials for Subcontracting Inward",
+        },
     ],
     "Subcontracting Receipt Item": [
         {
@@ -797,17 +815,7 @@ CUSTOM_FIELDS = {
         "Stock Entry Detail",
         "Subcontracting Receipt Item",
     ): [
-        {
-            "fieldname": "gst_hsn_code",
-            "label": "HSN/SAC",
-            "fieldtype": "Data",
-            "fetch_from": "item_code.gst_hsn_code",
-            "insert_after": "description",
-            "allow_on_submit": 1,
-            "print_hide": 1,
-            "fetch_if_empty": 1,
-            "translatable": 0,
-        },
+        transaction_hsn_code_field,
         {
             "fieldname": "gst_treatment",
             "label": "GST Treatment",
@@ -834,6 +842,7 @@ CUSTOM_FIELDS = {
             "fieldtype": "Float",
             "insert_after": "gst_details_section",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -843,6 +852,7 @@ CUSTOM_FIELDS = {
             "fieldtype": "Float",
             "insert_after": "igst_rate",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -852,6 +862,7 @@ CUSTOM_FIELDS = {
             "fieldtype": "Float",
             "insert_after": "cgst_rate",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -861,6 +872,7 @@ CUSTOM_FIELDS = {
             "fieldtype": "Float",
             "insert_after": "sgst_rate",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -870,6 +882,7 @@ CUSTOM_FIELDS = {
             "fieldtype": "Float",
             "insert_after": "cess_rate",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -885,6 +898,7 @@ CUSTOM_FIELDS = {
             "options": "Company:company:default_currency",
             "insert_after": "cb_gst_details",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -895,6 +909,7 @@ CUSTOM_FIELDS = {
             "options": "Company:company:default_currency",
             "insert_after": "igst_amount",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -905,6 +920,7 @@ CUSTOM_FIELDS = {
             "options": "Company:company:default_currency",
             "insert_after": "cgst_amount",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -915,6 +931,7 @@ CUSTOM_FIELDS = {
             "options": "Company:company:default_currency",
             "insert_after": "sgst_amount",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -925,6 +942,7 @@ CUSTOM_FIELDS = {
             "options": "Company:company:default_currency",
             "insert_after": "cess_amount",
             "read_only": 1,
+            "print_hide": 1,
             "translatable": 0,
             "no_copy": 1,
         },
@@ -1003,9 +1021,7 @@ CUSTOM_FIELDS = {
             "label": "Reason for Ineligibility",
             "fieldtype": "Select",
             "insert_after": "itc_classification",
-            "options": (
-                "\nIneligible As Per Section 17(5)\nITC restricted due to PoS rules"
-            ),
+            "options": ("\nIneligible As Per Section 17(5)\nITC restricted due to PoS rules"),
             "read_only": 1,
             "print_hide": 1,
         },
@@ -1015,9 +1031,7 @@ CUSTOM_FIELDS = {
             "fieldtype": "Select",
             "insert_after": "ineligibility_reason",
             "print_hide": 1,
-            "options": (
-                "\nNot Applicable\nReconciled\nUnreconciled\nIgnored\nMatch Found"
-            ),
+            "options": ("\nNot Applicable\nReconciled\nUnreconciled\nIgnored\nMatch Found"),
             "no_copy": 1,
             "read_only": 1,
         },
@@ -1032,6 +1046,16 @@ CUSTOM_FIELDS = {
             "description": "GSTR-3B period for claiming ITC (MMYYYY) or 'Deferred' to postpone.",
             "allow_on_submit": 1,
         },
+        {
+            "fieldname": "is_boe_applicable",
+            "label": "Is BOE Applicable",
+            "fieldtype": "Check",
+            "insert_after": "is_reverse_charge",
+            "print_hide": 1,
+            "default": 0,
+            "read_only": 1,
+            "depends_on": 'eval:doc.itc_classification === "Import Of Goods"',
+        },
     ],
     "Purchase Invoice Item": [
         {
@@ -1039,6 +1063,8 @@ CUSTOM_FIELDS = {
             "label": "Pending BOE Qty",
             "fieldtype": "Float",
             "insert_after": "rejected_qty",
+            "print_hide": 1,
+            "read_only": 1,
         },
     ],
     "Purchase Receipt": [
@@ -1230,10 +1256,22 @@ CUSTOM_FIELDS = {
     ],
     "Tax Category": [
         {
+            "fieldname": "is_india_compliance_default",
+            "label": "India Compliance Default",
+            "fieldtype": "Check",
+            "insert_after": "disabled",
+            "print_hide": 1,
+            "no_copy": 1,
+            "description": (
+                "When enabled, this Tax Category is used for automatic GST tax template"
+                " selection for the given Inter State / Reverse Charge combination."
+            ),
+        },
+        {
             "fieldname": "is_inter_state",
             "label": "Is Inter State",
             "fieldtype": "Check",
-            "insert_after": "disabled",
+            "insert_after": "is_india_compliance_default",
             "print_hide": 1,
         },
         {
@@ -1242,19 +1280,6 @@ CUSTOM_FIELDS = {
             "fieldtype": "Check",
             "insert_after": "is_inter_state",
             "print_hide": 1,
-        },
-        {
-            "fieldname": "tax_category_column_break",
-            "fieldtype": "Column Break",
-            "insert_after": "is_reverse_charge",
-        },
-        {
-            "fieldname": "gst_state",
-            "label": "Source State",
-            "fieldtype": "Select",
-            "options": state_options,
-            "insert_after": "company",
-            "translatable": 0,
         },
     ],
     "Item": [
@@ -1334,9 +1359,7 @@ HSN_CODE_FIELD = {
     "description": "You can search code by the description of the category.",
 }
 
-EDUCATION_CUSTOM_FIELDS = {
-    "Fee Category": [{**HSN_CODE_FIELD, "insert_after": "description"}]
-}
+EDUCATION_CUSTOM_FIELDS = {"Fee Category": [{**HSN_CODE_FIELD, "insert_after": "description"}]}
 
 HEALTHCARE_CUSTOM_FIELDS = {
     "Clinical Procedure Template": [
@@ -1398,6 +1421,13 @@ SALES_REVERSE_CHARGE_FIELDS = {
     "Sales Invoice": {**reverse_charge_field, "insert_after": "is_debit_note"},
 }
 
+PURCHASE_REVERSE_CHARGE_FIELDS = {
+    "Purchase Invoice": {**reverse_charge_field, "insert_after": "is_return"},
+    "Purchase Receipt": {**reverse_charge_field, "insert_after": "is_return"},
+    "Purchase Order": {**reverse_charge_field, "insert_after": "supplier_warehouse"},
+    "Supplier Quotation": {**reverse_charge_field, "insert_after": "has_unit_price_items"},
+}
+
 E_INVOICE_FIELDS = {
     "Sales Invoice": [
         {
@@ -1435,9 +1465,9 @@ E_WAYBILL_DN_FIELDS = [
         "insert_after": "vehicle_no",
         "print_hide": 1,
         "no_copy": 1,
-        "description": (
-            "Set as zero to update distance as per the e-Waybill portal (if available)"
-        ),
+        "description": ("Set as zero to update distance as per the e-Waybill portal (if available)"),
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "gst_transporter_id",
@@ -1445,9 +1475,12 @@ E_WAYBILL_DN_FIELDS = [
         "fieldtype": "Data",
         "insert_after": "transporter",
         "fetch_from": "transporter.gst_transporter_id",
+        "fetch_if_empty": 1,
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "mode_of_transport",
@@ -1459,6 +1492,8 @@ E_WAYBILL_DN_FIELDS = [
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "gst_vehicle_type",
@@ -1466,12 +1501,13 @@ E_WAYBILL_DN_FIELDS = [
         "fieldtype": "Select",
         "options": "Regular\nOver Dimensional Cargo (ODC)",
         "depends_on": 'eval:["Road", "Ship"].includes(doc.mode_of_transport)',
-        "read_only_depends_on": "eval: doc.mode_of_transport == 'Ship'",
         "default": "Regular",
         "insert_after": "lr_date",
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill || doc.mode_of_transport == 'Ship'",
     },
 ]
 
@@ -1493,6 +1529,8 @@ E_WAYBILL_INV_FIELDS = [
         "options": "Supplier",
         "print_hide": 1,
         "no_copy": 1,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "driver",
@@ -1502,6 +1540,8 @@ E_WAYBILL_INV_FIELDS = [
         "options": "Driver",
         "print_hide": 1,
         "no_copy": 1,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "lr_no",
@@ -1512,6 +1552,8 @@ E_WAYBILL_INV_FIELDS = [
         "no_copy": 1,
         "translatable": 0,
         "length": 30,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "vehicle_no",
@@ -1522,6 +1564,8 @@ E_WAYBILL_INV_FIELDS = [
         "no_copy": 1,
         "translatable": 0,
         "length": 15,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "transporter_col_break",
@@ -1534,10 +1578,13 @@ E_WAYBILL_INV_FIELDS = [
         "fieldtype": "Small Text",
         "insert_after": "transporter_col_break",
         "fetch_from": "transporter.supplier_name",
+        "fetch_if_empty": 1,
         "read_only": 1,
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "driver_name",
@@ -1545,9 +1592,12 @@ E_WAYBILL_INV_FIELDS = [
         "fieldtype": "Small Text",
         "insert_after": "mode_of_transport",
         "fetch_from": "driver.full_name",
+        "fetch_if_empty": 1,
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "lr_date",
@@ -1557,6 +1607,8 @@ E_WAYBILL_INV_FIELDS = [
         "default": "Today",
         "print_hide": 1,
         "no_copy": 1,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     *E_WAYBILL_DN_FIELDS,
 ]
@@ -1570,6 +1622,8 @@ E_WAYBILL_PURCHASE_RECEIPT_FIELDS = [
         "options": "Supplier",
         "print_hide": 1,
         "no_copy": 1,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "driver",
@@ -1579,6 +1633,8 @@ E_WAYBILL_PURCHASE_RECEIPT_FIELDS = [
         "options": "Driver",
         "print_hide": 1,
         "no_copy": 1,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "vehicle_no",
@@ -1589,6 +1645,8 @@ E_WAYBILL_PURCHASE_RECEIPT_FIELDS = [
         "no_copy": 1,
         "translatable": 0,
         "length": 15,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "driver_name",
@@ -1596,9 +1654,12 @@ E_WAYBILL_PURCHASE_RECEIPT_FIELDS = [
         "fieldtype": "Small Text",
         "insert_after": "driver",
         "fetch_from": "driver.full_name",
+        "fetch_if_empty": 1,
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     *E_WAYBILL_DN_FIELDS,
 ]
@@ -1621,6 +1682,8 @@ E_WAYBILL_SE_FIELDS = [
         "options": "Supplier",
         "print_hide": 1,
         "no_copy": 1,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "lr_no",
@@ -1631,6 +1694,8 @@ E_WAYBILL_SE_FIELDS = [
         "no_copy": 1,
         "translatable": 0,
         "length": 30,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "vehicle_no",
@@ -1641,6 +1706,8 @@ E_WAYBILL_SE_FIELDS = [
         "no_copy": 1,
         "translatable": 0,
         "length": 15,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "transporter_col_break",
@@ -1653,10 +1720,13 @@ E_WAYBILL_SE_FIELDS = [
         "fieldtype": "Small Text",
         "insert_after": "transporter_col_break",
         "fetch_from": "transporter.supplier_name",
+        "fetch_if_empty": 1,
         "read_only": 1,
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "lr_date",
@@ -1666,6 +1736,8 @@ E_WAYBILL_SE_FIELDS = [
         "default": "Today",
         "print_hide": 1,
         "no_copy": 1,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     *E_WAYBILL_DN_FIELDS,
 ]
@@ -1679,6 +1751,8 @@ E_WAYBILL_SCR_FIELDS = [
         "options": "Supplier",
         "print_hide": 1,
         "no_copy": 1,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "gst_transporter_id",
@@ -1686,9 +1760,12 @@ E_WAYBILL_SCR_FIELDS = [
         "fieldtype": "Data",
         "insert_after": "transporter_name",
         "fetch_from": "transporter.gst_transporter_id",
+        "fetch_if_empty": 1,
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "vehicle_no",
@@ -1699,6 +1776,8 @@ E_WAYBILL_SCR_FIELDS = [
         "no_copy": 1,
         "translatable": 0,
         "length": 15,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "distance",
@@ -1707,9 +1786,9 @@ E_WAYBILL_SCR_FIELDS = [
         "insert_after": "vehicle_no",
         "print_hide": 1,
         "no_copy": 1,
-        "description": (
-            "Set as zero to update distance as per the e-Waybill portal (if available)"
-        ),
+        "description": ("Set as zero to update distance as per the e-Waybill portal (if available)"),
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "mode_of_transport",
@@ -1721,6 +1800,8 @@ E_WAYBILL_SCR_FIELDS = [
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill",
     },
     {
         "fieldname": "gst_vehicle_type",
@@ -1728,12 +1809,13 @@ E_WAYBILL_SCR_FIELDS = [
         "fieldtype": "Select",
         "options": "Regular\nOver Dimensional Cargo (ODC)",
         "depends_on": 'eval:["Road", "Ship"].includes(doc.mode_of_transport)',
-        "read_only_depends_on": "eval: doc.mode_of_transport == 'Ship'",
         "default": "Regular",
         "insert_after": "lr_date",
         "print_hide": 1,
         "no_copy": 1,
         "translatable": 0,
+        "allow_on_submit": 1,
+        "read_only_depends_on": "eval: doc.ewaybill || doc.mode_of_transport == 'Ship'",
     },
 ]
 
@@ -1769,11 +1851,10 @@ stock_entry_e_waybill_field = {**e_waybill_no_field, "insert_after": "asset_repa
 
 
 E_WAYBILL_FIELDS = {
-    "Sales Invoice": E_WAYBILL_INV_FIELDS
-    + [e_waybill_no_field, e_waybill_status_field],
-    "Delivery Note": E_WAYBILL_DN_FIELDS + [e_waybill_no_field],
-    "Purchase Invoice": E_WAYBILL_INV_FIELDS + [purchase_e_waybill_field],
-    "Purchase Receipt": E_WAYBILL_PURCHASE_RECEIPT_FIELDS + [purchase_e_waybill_field],
-    "Stock Entry": E_WAYBILL_SE_FIELDS + [stock_entry_e_waybill_field],
-    "Subcontracting Receipt": E_WAYBILL_SCR_FIELDS + [purchase_e_waybill_field],
+    "Sales Invoice": [*E_WAYBILL_INV_FIELDS, e_waybill_no_field, e_waybill_status_field],
+    "Delivery Note": [*E_WAYBILL_DN_FIELDS, e_waybill_no_field],
+    "Purchase Invoice": [*E_WAYBILL_INV_FIELDS, purchase_e_waybill_field],
+    "Purchase Receipt": [*E_WAYBILL_PURCHASE_RECEIPT_FIELDS, purchase_e_waybill_field],
+    "Stock Entry": [*E_WAYBILL_SE_FIELDS, stock_entry_e_waybill_field],
+    "Subcontracting Receipt": [*E_WAYBILL_SCR_FIELDS, purchase_e_waybill_field],
 }

@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import gzip
+import json
 from datetime import datetime
 
 import frappe
@@ -13,6 +14,8 @@ from frappe.utils import (
     get_link_to_form,
     getdate,
 )
+from frappe.utils.response import json_handler
+from frappe.utils.synchronization import filelock
 
 from india_compliance.gst_india.doctype.gst_return_log.generate_gstr_1 import (
     FileGSTR1,
@@ -21,6 +24,8 @@ from india_compliance.gst_india.doctype.gst_return_log.generate_gstr_1 import (
 from india_compliance.gst_india.utils import get_party_for_gstin
 
 DOCTYPE = "GST Return Log"
+
+RAW_FIELD = "raw_gov_data"
 
 
 class GSTReturnLog(GenerateGSTR1, FileGSTR1, Document):
@@ -59,10 +64,8 @@ class GSTReturnLog(GenerateGSTR1, FileGSTR1, Document):
             self.db_set(file_field, None)
             return
 
-    def update_json_for(
-        self, file_field, json_data, overwrite=True, reset_reconcile=False
-    ):
-        if "summary" not in file_field:
+    def update_json_for(self, file_field, json_data, overwrite=True, reset_reconcile=False):
+        if "summary" not in file_field and file_field != RAW_FIELD:
             json_data["creation"] = get_datetime_str(get_datetime())
             self.remove_json_for(f"{file_field}_summary")
 
@@ -73,7 +76,7 @@ class GSTReturnLog(GenerateGSTR1, FileGSTR1, Document):
         # new file
         if not getattr(self, file_field):
             content = get_compressed_data(json_data)
-            file_name = frappe.scrub("{0}-{1}.json.gz".format(self.name, file_field))
+            file_name = frappe.scrub(f"{self.name}-{file_field}.json.gz")
             file = frappe.get_doc(
                 {
                     "doctype": "File",
@@ -100,7 +103,7 @@ class GSTReturnLog(GenerateGSTR1, FileGSTR1, Document):
 
         content = get_compressed_data(new_json)
 
-        file.save_file(content=content, overwrite=True)
+        file.save_file(content=content, overwrite=True, ignore_existing_file_check=True)
         self.db_set(file_field, file.file_url)
 
     def remove_json_for(self, file_field):
@@ -161,13 +164,9 @@ class GSTReturnLog(GenerateGSTR1, FileGSTR1, Document):
 
         if settings.is_gstr1_api_enabled(self.gstin):
             if self.filing_status == "Filed":
-                fields.extend(
-                    ["reconcile", "reconcile_summary", "filed", "filed_summary"]
-                )
+                fields.extend(["reconcile", "reconcile_summary", "filed", "filed_summary"])
             elif settings.compare_unfiled_data:
-                fields.extend(
-                    ["reconcile", "reconcile_summary", "unfiled", "unfiled_summary"]
-                )
+                fields.extend(["reconcile", "reconcile_summary", "unfiled", "unfiled_summary"])
 
         return fields
 
@@ -220,9 +219,7 @@ def process_gstr_1_returns_info(company, gstin, e_filed_list):
         gstin_doc = frappe.new_doc("GSTIN", gstin=gstin, status="Active")
 
     def _update_gstr_1_filed_upto(filing_date):
-        if not gstin_doc.gstr_1_filed_upto or filing_date > getdate(
-            gstin_doc.gstr_1_filed_upto
-        ):
+        if not gstin_doc.gstr_1_filed_upto or filing_date > getdate(gstin_doc.gstr_1_filed_upto):
             gstin_doc.gstr_1_filed_upto = filing_date
             gstin_doc.save(ignore_permissions=True)
 
@@ -235,9 +232,7 @@ def process_gstr_1_returns_info(company, gstin, e_filed_list):
             "filing_date": datetime.strptime(info["dof"], "%d-%m-%Y").date(),
         }
 
-        filed_upto = get_last_day(
-            getdate(f"{info['ret_prd'][2:]}-{info['ret_prd'][0:2]}-01")
-        )
+        filed_upto = get_last_day(getdate(f"{info['ret_prd'][2:]}-{info['ret_prd'][0:2]}-01"))
 
         if key in gstr1_logs:
             if gstr1_logs[key] != info["arn"]:
@@ -287,9 +282,7 @@ def process_gstr_3b_returns_info(company, gstin, e_filed_list):
 def add_comment_to_gst_return_log(doc, action):
     period = getdate(doc.posting_date).strftime("%m%Y")
     log_name = f"GSTR1-{period}-{doc.company_gstin}"
-    if not (log := get_gst_return_log(log_name)):
-        return
-
+    log = get_gst_return_log(log_name)
     log.add_comment(
         "Comment",
         f"{doc.doctype} : {get_link_to_form(doc.doctype, doc.name)} has been {action} by {frappe.session.user}",
@@ -299,9 +292,7 @@ def add_comment_to_gst_return_log(doc, action):
 def update_is_not_latest_gstr1_data(posting_date, company_gstin):
     period = posting_date.strftime("%m%Y")
 
-    frappe.db.set_value(
-        "GST Return Log", f"GSTR1-{period}-{company_gstin}", "is_latest_data", 0
-    )
+    frappe.db.set_value("GST Return Log", f"GSTR1-{period}-{company_gstin}", "is_latest_data", 0)
 
     frappe.publish_realtime(
         "is_not_latest_gstr1_data",
@@ -328,11 +319,30 @@ def get_file_doc(doctype, docname, attached_to_field):
 
 
 def get_compressed_data(json_data):
-    return gzip.compress(frappe.safe_encode(frappe.as_json(json_data)))
+    return gzip.compress(
+        frappe.safe_encode(json.dumps(json_data, default=json_handler, separators=(",", ":")))
+    )
 
 
 def get_decompressed_data(content):
     return frappe.parse_json(frappe.safe_decode(gzip.decompress(content)))
+
+
+def store_raw_return_data(gstin, return_type, return_period, json_data, overwrite=True):
+    """Keep the portal payload (gzipped) in the period's log `raw_gov_data` field."""
+    name = f"{return_type}-{return_period}-{gstin}"
+    with filelock(frappe.scrub(f"raw_return_{name}")):
+        get_gst_return_log(name).update_json_for(RAW_FIELD, json_data, overwrite=overwrite)
+
+
+def get_raw_return_data(gstin, return_type, return_period):
+    """Stored portal payload, or None."""
+    name = f"{return_type}-{return_period}-{gstin}"
+    if not frappe.db.exists(DOCTYPE, name):
+        return None
+
+    with filelock(frappe.scrub(f"raw_return_{name}")):
+        return get_gst_return_log(name).get_json_for(RAW_FIELD)
 
 
 def create_ims_return_log(company_gstin):

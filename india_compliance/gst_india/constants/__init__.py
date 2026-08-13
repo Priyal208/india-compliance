@@ -1,8 +1,14 @@
 import re
 
 from erpnext.stock.get_item_details import sales_doctypes
+from frappe.utils import getdate
 
 TIMEZONE = "Asia/Kolkata"
+
+# Date from which NIC requires Ship To GSTIN in the e-Invoice and e-Waybill APIs.
+# Kept on hold by GSTN advisory dated 29.07.2026 with no revised date, so this is
+# deliberately unreachable. Sandbox stays reachable via sandbox_mode.
+SHIP_TO_GSTIN_APPLICABLE_DATE = getdate("2099-12-31")
 
 ABBREVIATIONS = {"SEZ", "GST", "CGST", "SGST", "IGST", "CESS", "HSN"}
 
@@ -23,6 +29,31 @@ GST_REFUND_TAX_TYPES = tuple(tax_type + "_refund" for tax_type in GST_TAX_TYPES)
 TAX_TYPES = (*GST_TAX_TYPES, *GST_RCM_TAX_TYPES, *GST_REFUND_TAX_TYPES)
 
 GST_PARTY_TYPES = ("Customer", "Supplier", "Company")
+
+# Stock Entry purposes for Subcontracting Inward (company is the job worker)
+SUBCONTRACTING_INWARD_PURPOSES = ("Subcontracting Delivery", "Return Raw Material to Customer")
+
+# Stock Entry purposes where goods move between subcontracting parties
+SUBCONTRACTING_PURPOSES = ("Send to Subcontractor", *SUBCONTRACTING_INWARD_PURPOSES)
+
+# Stock Entry purposes eligible for e-Waybill
+E_WAYBILL_STOCK_ENTRY_PURPOSES = ("Material Transfer", "Material Issue", *SUBCONTRACTING_PURPOSES)
+
+# Transporter fields that stay editable after submit until an e-Waybill is generated.
+TRANSPORTER_FIELDS = (
+    "transporter",
+    "transporter_name",
+    "gst_transporter_id",
+    "driver",
+    "driver_name",
+    "lr_no",
+    "lr_date",
+    "vehicle_no",
+    "distance",
+    "mode_of_transport",
+    "gst_vehicle_type",
+)
+
 
 # Map for e-Invoice Supply Type
 GST_CATEGORIES = {
@@ -61,6 +92,7 @@ EXPORT_TYPES = (
 )
 
 TAXABLE_GST_TREATMENTS = ("Taxable", "Zero-Rated")
+IMPORT_GST_CATEGORIES = ("Overseas", "SEZ")
 
 
 STATE_NUMBERS = {
@@ -163,7 +195,7 @@ UOM_MAP = {
     "YDS": "YARDS",
 }
 
-# Not available for Telangana, Ladakh, and Other Territory
+# Not available for Other Territory
 STATE_PINCODE_MAPPING = {
     "Jammu and Kashmir": (180, 194),
     "Himachal Pradesh": (171, 177),
@@ -199,6 +231,8 @@ STATE_PINCODE_MAPPING = {
     "Puducherry": ((533, 533), (605, 605), (607, 607), (609, 609), (673, 673)),
     "Andaman and Nicobar Islands": (744, 744),
     "Andhra Pradesh": (500, 535),
+    "Telangana": ((500, 509), (518, 518), (533, 533)),
+    "Ladakh": ((180, 180), (181, 181), (184, 184), (190, 191), (194, 194)),
 }
 
 PORT_CODES = {
@@ -1479,8 +1513,13 @@ ORIGINAL_VS_AMENDED = (
         "original": "IMPGSEZ",
         "amended": "",
     },
+    {
+        "original": "ECOM",
+        "amended": "ECOMA",
+    },
 )
 
 E_INVOICE_MASTER_CODES_URL = "https://einvoice1.gst.gov.in/Others/MasterCodes"
 
 VALID_HSN_LENGTHS = (4, 6, 8)
+SERVICE_HSN_PREFIX = "99"

@@ -1,6 +1,6 @@
 import click
-
 import frappe
+from frappe.utils import cint
 
 from india_compliance.gst_india.utils import get_all_gst_accounts, get_gstin_list
 
@@ -80,9 +80,7 @@ def update_gstin_for_je(company, gst_accounts):
 
     if len(company_gstins) > 1:
         click.secho(
-            "Multiple GSTINs found for company {0}. Please update Company GSTIN in Journal Entry manually to use GST Balance Report.".format(
-                company
-            ),
+            f"Multiple GSTINs found for company {company}. Please update Company GSTIN in Journal Entry manually to use GST Balance Report.",
             fg="yellow",
         )
 
@@ -92,9 +90,7 @@ def update_gstin_for_je(company, gst_accounts):
 
 def _update_gstins_for_je(je_list, gstin):
     doc = frappe.qb.DocType("Journal Entry")
-    frappe.qb.update(doc).set(doc.company_gstin, gstin).where(
-        doc.name.isin(je_list)
-    ).run()
+    frappe.qb.update(doc).set(doc.company_gstin, gstin).where(doc.name.isin(je_list)).run()
 
 
 def update_gl_entries(gst_accounts):
@@ -118,9 +114,7 @@ def update_gl_entries(gst_accounts):
 
     if error_voucher_types:
         click.secho(
-            "Company GSTIN is now a required field in GL Entry with GST Account. Seems it is missing in your custom doctypes: {0}".format(
-                ", ".join(error_voucher_types)
-            ),
+            f"Company GSTIN is now a required field in GL Entry with GST Account. Seems it is missing in your custom doctypes: {', '.join(error_voucher_types)}",
             fg="red",
         )
 
@@ -178,7 +172,7 @@ def toggle_allow_on_submit(allow=True, voucher_types=None):
     custom_field = frappe.qb.DocType("Custom Field")
     query = (
         frappe.qb.update(custom_field)
-        .set(custom_field.allow_on_submit, bool(allow))
+        .set(custom_field.allow_on_submit, cint(allow))
         .where(custom_field.fieldname == "company_gstin")
     )
 

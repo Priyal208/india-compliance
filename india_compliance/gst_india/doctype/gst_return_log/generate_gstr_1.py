@@ -1,10 +1,11 @@
 # Copyright (c) 2024, Resilient Tech and contributors
 # For license information, please see license.txt
 import itertools
+from typing import ClassVar
 
 import frappe
 from frappe import _, unscrub
-from frappe.utils import flt, sbool
+from frappe.utils import cint, flt, sbool
 from frappe.utils.data import getdate
 
 from india_compliance.gst_india.api_classes.taxpayer_returns import GSTR1API
@@ -18,13 +19,11 @@ from india_compliance.gst_india.utils.gstr_1 import (
     QUARTERLY_KEYS,
     SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAX,
     SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAXABLE_VALUE,
-    GovJsonKey,
-    GSTR1_Category,
+    Category,
+    JsonKey,
+    SubCategory,
 )
-from india_compliance.gst_india.utils.gstr_1 import GSTR1_DataField as inv_f
-from india_compliance.gst_india.utils.gstr_1 import (
-    GSTR1_SubCategory,
-)
+from india_compliance.gst_india.utils.gstr_1 import DocField as doc
 from india_compliance.gst_india.utils.gstr_1.gstr_1_download import (
     download_gstr1_json_data,
 )
@@ -39,7 +38,7 @@ from india_compliance.gst_india.utils.gstr_utils import (
 
 
 class SummarizeGSTR1:
-    AMOUNT_FIELDS = {
+    AMOUNT_FIELDS: ClassVar[dict] = {
         "total_taxable_value": 0,
         "total_igst_amount": 0,
         "total_cgst_amount": 0,
@@ -118,7 +117,7 @@ class SummarizeGSTR1:
         # Round Values
         for row in category_summary:
             for key, value in row.items():
-                if isinstance(value, (int, float)):
+                if isinstance(value, int | float):
                     row[key] = flt(value, 2)
         return category_summary
 
@@ -133,7 +132,7 @@ class SummarizeGSTR1:
         """
         subcategory_summary = {}
 
-        for subcategory in GSTR1_SubCategory:
+        for subcategory in SubCategory:
             subcategory = subcategory.value
             if subcategory not in data:
                 continue
@@ -148,20 +147,22 @@ class SummarizeGSTR1:
                     continue
 
                 for key in self.AMOUNT_FIELDS:
-                    summary_row[key] += row.get(key, 0)
+                    summary_row[key] += row.get(key) or 0
 
                 if doc_num := row.get("document_number"):
                     summary_row["unique_records"].add(doc_num)
 
-                elif subcategory == GSTR1_SubCategory.DOC_ISSUE.value:
+                elif subcategory == SubCategory.DOC_ISSUE.value:
                     self.count_doc_issue_summary(summary_row, row)
 
                 elif subcategory in (
-                    GSTR1_SubCategory.HSN_B2B.value,
-                    GSTR1_SubCategory.HSN_B2C.value,
-                    GSTR1_SubCategory.HSN.value,  # Backwards compatibility
+                    SubCategory.HSN_B2B.value,
+                    SubCategory.HSN_B2C.value,
+                    SubCategory.HSN.value,  # Backwards compatibility
+                    SubCategory.SUPECOM_52.value,
+                    SubCategory.SUPECOM_9_5.value,
                 ):
-                    self.count_hsn_summary(summary_row)
+                    self.add_unique_count(summary_row)
 
         for subcategory in subcategory_summary.keys():
             summary_row = subcategory_summary[subcategory]
@@ -188,21 +189,17 @@ class SummarizeGSTR1:
             )
 
             for row in data[key]:
-                if (
-                    row.get("sub_category")
-                    in SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAXABLE_VALUE
-                ):
+                if row.get("sub_category") in SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAXABLE_VALUE:
                     continue
 
                 for field in self.AMOUNT_FIELDS:
                     if (
                         field != "total_taxable_value"
-                        and row.get("sub_category")
-                        in SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAX
+                        and row.get("sub_category") in SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAX
                     ):
                         continue
 
-                    summary_row[field] += row.get(field, 0)
+                    summary_row[field] += row.get(field) or 0
 
         return subcategory_summary
 
@@ -223,14 +220,10 @@ class SummarizeGSTR1:
             "no_of_records": 0,
             "indent": 1,
             "consider_in_total_taxable_value": (
-                False
-                if subcategory in SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAXABLE_VALUE
-                else True
+                False if subcategory in SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAXABLE_VALUE else True
             ),
             "consider_in_total_tax": (
-                False
-                if subcategory in SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAX
-                else True
+                False if subcategory in SUBCATEGORIES_NOT_CONSIDERED_IN_TOTAL_TAX else True
             ),
             "unique_records": set(),
             **self.AMOUNT_FIELDS,
@@ -238,7 +231,7 @@ class SummarizeGSTR1:
 
     @staticmethod
     def count_doc_issue_summary(summary_row, data_row):
-        if data_row.get(inv_f.DOC_TYPE) in (
+        if data_row.get(doc.DOC_TYPE) in (
             "Excluded from Report (Invalid Invoice Number)",
             "Excluded from Report (Same GSTIN Billing)",
             "Excluded from Report (Is Opening Entry)",
@@ -246,25 +239,26 @@ class SummarizeGSTR1:
             return
 
         summary_row["no_of_records"] += (
-            data_row.get(inv_f.TOTAL_COUNT, 0)
-            - data_row.get(inv_f.CANCELLED_COUNT, 0)
-            - data_row.get(inv_f.DRAFT_COUNT, 0)
+            (data_row.get(doc.TOTAL_COUNT) or 0)
+            - (data_row.get(doc.CANCELLED_COUNT) or 0)
+            - (data_row.get(doc.DRAFT_COUNT) or 0)
         )
 
     @staticmethod
-    def count_hsn_summary(summary_row):
+    def add_unique_count(summary_row):
         summary_row["no_of_records"] += 1
 
 
 class ReconcileGSTR1:
-    IGNORED_FIELDS = {inv_f.TAX_RATE, inv_f.DOC_VALUE}
-    UNREQUIRED_KEYS = {
-        inv_f.TRANSACTION_TYPE,
-        inv_f.DOC_NUMBER,
-        inv_f.DOC_DATE,
-        inv_f.CUST_GSTIN,
-        inv_f.CUST_NAME,
-        inv_f.REVERSE_CHARGE,
+    IGNORED_FIELDS: ClassVar[set] = {doc.TAX_RATE, doc.DOC_VALUE}
+    BOOKS_ONLY_FIELDS: ClassVar[set] = {doc.DRAFT_COUNT}
+    UNREQUIRED_KEYS: ClassVar[set] = {
+        doc.TRANSACTION_TYPE,
+        doc.DOC_NUMBER,
+        doc.DOC_DATE,
+        doc.CUST_GSTIN,
+        doc.CUST_NAME,
+        doc.REVERSE_CHARGE,
     }
 
     def get_reconcile_gstr1_data(self, gov_data, books_data):
@@ -290,7 +284,7 @@ class ReconcileGSTR1:
         else:
             update_books_match = True
 
-        for subcategory in GSTR1_SubCategory:
+        for subcategory in SubCategory:
             subcategory = subcategory.value
             books_subdata = books_data.get(subcategory) or {}
             gov_subdata = gov_data.get(subcategory) or {}
@@ -340,9 +334,7 @@ class ReconcileGSTR1:
                 if not update_books_match:
                     continue
 
-                books_empty_row = self.get_empty_row(
-                    gov_value[0] if is_list else gov_value
-                )
+                books_empty_row = self.get_empty_row(gov_value[0] if is_list else gov_value)
                 books_empty_row["upload_status"] = "Missing in Books"
 
                 books_subdata[key] = [books_empty_row] if is_list else books_empty_row
@@ -396,9 +388,7 @@ class ReconcileGSTR1:
                 gov_row[0] if gov_row else books_row[0], ReconcileGSTR1.UNREQUIRED_KEYS
             )
             gov_row = gov_row[0] if gov_row else {}
-            books_row = (
-                AggregateInvoices.get_aggregate_invoices(books_row) if books_row else {}
-            )
+            books_row = AggregateInvoices.get_aggregate_invoices(books_row) if books_row else {}
 
         else:
             reconcile_row = ReconcileGSTR1.get_empty_row(gov_row or books_row)
@@ -415,15 +405,19 @@ class ReconcileGSTR1:
         if not books_row:
             reconcile_row["match_status"] = "Missing in Books"
 
+        amount_keys = {
+            key
+            for row in (reconcile_row, books_row, gov_row)
+            for key, value in row.items()
+            if isinstance(value, int | float)
+        } - ReconcileGSTR1.BOOKS_ONLY_FIELDS
+
+        books_values = ReconcileGSTR1.comparable_books_values(books_row)
+
         # Compute Differences
-        for key, value in reconcile_row.items():
-            if (
-                isinstance(value, (int, float))
-                and key not in AggregateInvoices.IGNORED_FIELDS
-            ):
-                reconcile_row[key] = flt(
-                    (books_row.get(key) or 0) - (gov_row.get(key) or 0), 2
-                )
+        for key in [*reconcile_row, *sorted(amount_keys - set(reconcile_row))]:
+            if key in amount_keys and key not in AggregateInvoices.IGNORED_FIELDS:
+                reconcile_row[key] = flt((books_values.get(key) or 0) - (gov_row.get(key) or 0), 2)
                 has_different_value = reconcile_row[key] != 0
 
             elif key in ("customer_gstin", "place_of_supply"):
@@ -454,6 +448,17 @@ class ReconcileGSTR1:
         return reconcile_row
 
     @staticmethod
+    def comparable_books_values(books_row: dict):
+        """We file a draft as cancelled, so compare the folded count."""
+        if not books_row.get(doc.DRAFT_COUNT):
+            return books_row
+
+        return {
+            **books_row,
+            doc.CANCELLED_COUNT: (books_row.get(doc.CANCELLED_COUNT) or 0) + books_row[doc.DRAFT_COUNT],
+        }
+
+    @staticmethod
     def get_empty_row(row: dict, unrequired_keys=None):
         """
         Row with all values as 0
@@ -468,7 +473,7 @@ class ReconcileGSTR1:
                 empty_row[key] = None
                 continue
 
-            if isinstance(value, (int, float)):
+            if isinstance(value, int | float):
                 empty_row[key] = 0
 
             if key == "items":
@@ -485,7 +490,7 @@ class ReconcileGSTR1:
 
 
 class AggregateInvoices:
-    IGNORED_FIELDS = {inv_f.TAX_RATE, inv_f.DOC_VALUE}
+    IGNORED_FIELDS: ClassVar[set] = {doc.TAX_RATE, doc.DOC_VALUE}
 
     @staticmethod
     def get_aggregate_data(data: dict):
@@ -494,10 +499,10 @@ class AggregateInvoices:
         and updates the data
         """
         sub_categories_requiring_aggregation = [
-            GSTR1_SubCategory.B2CS,
-            GSTR1_SubCategory.NIL_EXEMPT,
-            GSTR1_SubCategory.AT,
-            GSTR1_SubCategory.TXP,
+            SubCategory.B2CS,
+            SubCategory.NIL_EXEMPT,
+            SubCategory.AT,
+            SubCategory.TXP,
         ]
 
         aggregate_data = {}
@@ -508,9 +513,7 @@ class AggregateInvoices:
             if not subcategory_data:
                 continue
 
-            aggregate_data[subcategory.value] = (
-                AggregateInvoices.get_aggregate_subcategory(subcategory_data)
-            )
+            aggregate_data[subcategory.value] = AggregateInvoices.get_aggregate_subcategory(subcategory_data)
 
         return aggregate_data
 
@@ -523,14 +526,12 @@ class AggregateInvoices:
             if not value_keys:
                 value_keys = AggregateInvoices.get_value_keys(invoices[0])
 
-            aggregate_invoices[_id] = [
-                AggregateInvoices.get_aggregate_invoices(invoices, value_keys)
-            ]
+            aggregate_invoices[_id] = [AggregateInvoices.get_aggregate_invoices(invoices, value_keys)]
 
         return aggregate_invoices
 
     @staticmethod
-    def get_aggregate_invoices(invoices: list, value_keys: list = None) -> dict:
+    def get_aggregate_invoices(invoices: list, value_keys: list | None = None) -> dict:
         """
         There can be multiple rows in books data for a single row in gov data
         Aggregate all the rows to a single row
@@ -540,10 +541,7 @@ class AggregateInvoices:
 
         aggregated_invoice = invoices[0].copy()
         aggregated_invoice.update(
-            {
-                key: sum([invoice.get(key, 0) for invoice in invoices])
-                for key in value_keys
-            }
+            {key: sum([invoice.get(key, 0) for invoice in invoices]) for key in value_keys}
         )
 
         return aggregated_invoice
@@ -553,7 +551,7 @@ class AggregateInvoices:
         keys = []
 
         for key, value in invoice.items():
-            if not isinstance(value, (int, float)):
+            if not isinstance(value, int | float):
                 continue
 
             if key in AggregateInvoices.IGNORED_FIELDS:
@@ -583,8 +581,7 @@ class GenerateGSTR1(SummarizeGSTR1, ReconcileGSTR1, AggregateInvoices):
             [
                 row.request_type
                 for row in self.actions
-                if not row.status
-                and row.request_type in ["reset", "upload", "proceed_to_file"]
+                if not row.status and row.request_type in ["reset", "upload", "proceed_to_file"]
             ]
         )
 
@@ -608,9 +605,7 @@ class GenerateGSTR1(SummarizeGSTR1, ReconcileGSTR1, AggregateInvoices):
 
         # APIs Disabled
         settings = frappe.get_cached_doc("GST Settings")
-        if not settings.is_gstr1_api_enabled(
-            self.gstin, warn_for_missing_credentials=True
-        ):
+        if not settings.is_gstr1_api_enabled(self.gstin, warn_for_missing_credentials=True):
             return self.generate_only_books_data(data, filters, callback)
 
         # APIs Enabled
@@ -669,9 +664,7 @@ class GenerateGSTR1(SummarizeGSTR1, ReconcileGSTR1, AggregateInvoices):
         """
 
         if not self.get("filing_preference"):
-            self.filing_preference = get_and_update_filing_preference(
-                self.gstin, self.return_period
-            )
+            self.filing_preference = get_and_update_filing_preference(self.gstin, self.return_period)
 
     def generate_only_books_data(self, data, filters, callback=None):
         status = "Not Filed"
@@ -769,9 +762,7 @@ class GenerateGSTR1(SummarizeGSTR1, ReconcileGSTR1, AggregateInvoices):
                     continue
 
             filing_from = getdate(f"01-{filters.month_or_quarter}-{filters.year}")
-            summary_data = self.get_summarized_data(
-                data[key], filing_from, self.filing_status == "Filed"
-            )
+            summary_data = self.get_summarized_data(data[key], filing_from, self.filing_status == "Filed")
 
             if key == "reconcile":
                 amendment_row = self.get_net_liability_from_amendments()
@@ -808,9 +799,7 @@ class GenerateGSTR1(SummarizeGSTR1, ReconcileGSTR1, AggregateInvoices):
         return data
 
     def get_net_liability_from_amendments(self):
-        if not (
-            self.filed_summary and (filed_summary := self.get_json_for("filed_summary"))
-        ):
+        if not (self.filed_summary and (filed_summary := self.get_json_for("filed_summary"))):
             return
 
         amendment_row = None
@@ -835,7 +824,7 @@ class FileGSTR1:
 
         # reset called after proceed to file
         self.db_set({"filing_status": "Not Filed"})
-        self.db_set({"is_nil": sbool(is_nil_return)})
+        self.db_set({"is_nil": cint(sbool(is_nil_return))})
 
         api = GSTR1API(self)
         response = api.reset_gstr_1_data(self.return_period)
@@ -877,7 +866,7 @@ class FileGSTR1:
 
         verify_request_in_progress(self, force)
 
-        keys = {category.value for category in GovJsonKey}
+        keys = {category.value for category in JsonKey}
         if all(key not in json_data for key in keys):
             frappe.msgprint(_("No data to upload"), indicator="red")
             return
@@ -921,9 +910,7 @@ class FileGSTR1:
             )
 
         if status_cd == "PE":
-            response["error_report"] = convert_to_internal_data_format(
-                response.get("error_report"), True
-            )
+            response["error_report"] = convert_to_internal_data_format(response.get("error_report"), True)
             self.update_json_for("upload_error", response)
 
         if status_cd == "P":
@@ -946,7 +933,7 @@ class FileGSTR1:
         response = api.proceed_to_file("GSTR1", self.return_period, is_nil_return)
 
         # Return Form already ready to be filed
-        if response.error and response.error.error_cd == "RET00003" or is_nil_return:
+        if (response.error and response.error.error_cd == "RET00003") or is_nil_return:
             set_gstr_actions(
                 self,
                 "proceed_to_file",
@@ -956,9 +943,7 @@ class FileGSTR1:
             )
             return self.fetch_and_compare_summary(api)
 
-        set_gstr_actions(
-            self, "proceed_to_file", response.get("reference_id"), api.request_id
-        )
+        set_gstr_actions(self, "proceed_to_file", response.get("reference_id"), api.request_id)
 
     def process_proceed_to_file_gstr1(self):
         if not self.actions:
@@ -986,7 +971,7 @@ class FileGSTR1:
             response = {}
 
         summary = api.get_gstr_1_data("RETSUM", self.return_period)
-        self.db_set("is_nil", summary.isnil == "Y")
+        self.db_set("is_nil", cint(summary.isnil == "Y"))
 
         if summary.error:
             return
@@ -1071,9 +1056,7 @@ class FileGSTR1:
         for data in authenticated_summary:
             if "Net Liability from Amendments" == data["description"]:
                 amended_liability = data
-            elif data.get("consider_in_total_taxable_value") or data.get(
-                "consider_in_total_tax"
-            ):
+            elif data.get("consider_in_total_taxable_value") or data.get("consider_in_total_tax"):
                 for key, value in data.items():
                     if key not in non_amended_entries:
                         continue
@@ -1097,9 +1080,9 @@ def verify_request_in_progress(return_log, force):
             continue
 
         frappe.throw(
-            _(
-                "There is a {0} request in progress. Please wait for the process to complete."
-            ).format(row.request_type)
+            _("There is a {0} request in progress. Please wait for the process to complete.").format(
+                row.request_type
+            )
         )
 
 
@@ -1114,12 +1097,10 @@ def get_differing_categories(mapped_summary, gov_summary):
 
     # TODO: Check this for all categories
     CATEGORY_KEYS = {
-        (GSTR1_Category.NIL_EXEMPT.value): {
-            "total_exempted_amount",
-            "total_nil_rated_amount",
-            "total_non_gst_amount",
+        (Category.NIL_EXEMPT.value): {
+            "total_taxable_value",
         },
-        (GSTR1_Category.DOC_ISSUE.value): {
+        (Category.DOC_ISSUE.value): {
             "no_of_records",
         },
     }
@@ -1148,7 +1129,7 @@ def get_differing_categories(mapped_summary, gov_summary):
         keys_to_compare = CATEGORY_KEYS.get(category, KEYS_TO_COMPARE)
 
         for key in keys_to_compare:
-            if gov_entry.get(key, 0) != row.get(key):
+            if (gov_entry.get(key) or 0) != (row.get(key) or 0):
                 differing_categories.add(category)
                 break
 
@@ -1164,7 +1145,7 @@ def get_differing_categories(mapped_summary, gov_summary):
         keys_to_compare = CATEGORY_KEYS.get(row["description"], KEYS_TO_COMPARE)
 
         for key in keys_to_compare:
-            if row.get(key, 0) != 0:
+            if (row.get(key) or 0) != 0:
                 differing_categories.add(row["description"])
                 break
 

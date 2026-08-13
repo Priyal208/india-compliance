@@ -9,6 +9,24 @@ import {
     PAN_REGEX,
 } from "./regex_constants";
 
+const INWARD_SECTION_MAPPING = {
+    4: {
+        "ITC Available": [
+            "Import Of Goods",
+            "Import Of Service",
+            "ITC on Reverse Charge",
+            "Input Service Distributor",
+            "All Other ITC",
+        ],
+        "ITC Reversed": ["As per rules 42 & 43 of CGST Rules and section 17(5)", "Others"],
+        "Ineligible ITC": ["Reclaim of ITC Reversal", "ITC restricted due to PoS rules"],
+    },
+    5: {
+        "Composition Scheme, Exempted, Nil Rated": ["Composition Scheme, Exempted, Nil Rated"],
+        "Non-GST": ["Non-GST"],
+    },
+};
+
 frappe.provide("india_compliance");
 
 window.gst_settings = frappe.boot.gst_settings;
@@ -32,6 +50,29 @@ Object.assign(india_compliance, {
     QUARTER: ["Jan-Mar", "Apr-Jun", "Jul-Sep", "Oct-Dec"],
 
     HSN_BIFURCATION_FROM: frappe.datetime.str_to_obj("2025-05-01"),
+
+    // Stock Entry purposes for Subcontracting Inward (company is the job worker)
+    SUBCONTRACTING_INWARD_PURPOSES: ["Subcontracting Delivery", "Return Raw Material to Customer"],
+
+    // Stock Entry purposes where goods move between subcontracting parties
+    SUBCONTRACTING_PURPOSES: [
+        "Send to Subcontractor",
+        "Subcontracting Delivery",
+        "Return Raw Material to Customer",
+    ],
+
+    // Stock Entry purposes eligible for e-Waybill
+    E_WAYBILL_STOCK_ENTRY_PURPOSES: [
+        "Material Transfer",
+        "Material Issue",
+        "Send to Subcontractor",
+        "Subcontracting Delivery",
+        "Return Raw Material to Customer",
+    ],
+
+    is_subcontracting_inward_entry(doc) {
+        return this.SUBCONTRACTING_INWARD_PURPOSES.includes(doc.purpose);
+    },
 
     get_month_year_from_period(period) {
         /**
@@ -127,7 +168,7 @@ Object.assign(india_compliance, {
     },
 
     get_party_type(doctype) {
-        return in_list(frappe.boot.sales_doctypes, doctype) ? "Customer" : "Supplier";
+        return frappe.boot.sales_doctypes.includes(doctype) ? "Customer" : "Supplier";
     },
 
     async set_gstin_status(field, doc, force_update = false) {
@@ -144,10 +185,7 @@ Object.assign(india_compliance, {
         if (!message) message = { status: "Not Available" };
 
         field.set_description(
-            india_compliance.get_gstin_status_desc(
-                message?.status,
-                message?.last_updated_on
-            )
+            india_compliance.get_gstin_status_desc(message?.status, message?.last_updated_on),
         );
 
         this.set_gstin_refresh_btn(field, doc);
@@ -186,14 +224,14 @@ Object.assign(india_compliance, {
             pan_status,
             get_indicator(pan_status),
             datetime,
-            "pan-last-synced"
+            "pan-last-synced",
         );
 
         field.set_description(pan_desc);
 
         const refresh_btn = this.get_status_refresh_button(
             "refresh-pan",
-            field.$wrapper.find(".pan-last-synced")
+            field.$wrapper.find(".pan-last-synced"),
         );
 
         refresh_btn.on("click", async function () {
@@ -230,12 +268,7 @@ Object.assign(india_compliance, {
             }
         }
 
-        return this.get_status_description(
-            status,
-            get_indicator(status),
-            datetime,
-            "gstin-last-synced"
-        );
+        return this.get_status_description(status, get_indicator(status), datetime, "gstin-last-synced");
     },
 
     set_gstin_refresh_btn(field, doc) {
@@ -249,7 +282,7 @@ Object.assign(india_compliance, {
 
         const refresh_btn = this.get_status_refresh_button(
             "refresh-gstin",
-            field.$wrapper.find(".gstin-last-synced")
+            field.$wrapper.find(".gstin-last-synced"),
         );
 
         refresh_btn.on("click", async function () {
@@ -265,9 +298,7 @@ Object.assign(india_compliance, {
                     <strong>${status}</strong>
                     <span class="d-flex justify-content-between align-items-center ${classes}"
                         title="${user_date}" style="margin-left: auto;gap: 2px">
-                       <span style="text-align: end;"> ${
-                           datetime ? "Synced " + pretty_date : ""
-                       }</span>
+                       <span style="text-align: end;"> ${datetime ? "Synced " + pretty_date : ""}</span>
                     </span>
                 </div>`;
     },
@@ -295,6 +326,13 @@ Object.assign(india_compliance, {
         }
 
         state_field.set_data(frappe.boot.india_state_options || []);
+    },
+
+    get_state_from_gstin(gstin) {
+        if (!gstin || gstin.length < 2) return;
+
+        const state_number = gstin.substring(0, 2);
+        return (frappe.boot.gst_state_by_number || {})[state_number];
     },
 
     can_enable_api(settings) {
@@ -376,6 +414,15 @@ Object.assign(india_compliance, {
         };
     },
 
+    set_hsn_code_autocomplete(frm, table_fieldname = "items") {
+        const grid = frm.fields_dict[table_fieldname].grid;
+        frm.set_query("gst_hsn_code", table_fieldname, () => ({
+            query: "india_compliance.gst_india.utils.get_hsn_code_list",
+        }));
+
+        frappe.meta.get_docfield(grid.doctype, "gst_hsn_code").ignore_validation = 1;
+    },
+
     setup_itc_claim_period_query(frm) {
         frm.set_query("itc_claim_period", () => ({
             query: "india_compliance.gst_india.utils.itc_claim.get_itc_period_options",
@@ -395,10 +442,8 @@ Object.assign(india_compliance, {
             "itc_claim_period",
             "description",
             is_filed
-                ? __("GSTR-3B for {0} is filed", [ frm.doc.itc_claim_period ])
-                : __(
-                      "GSTR-3B period for claiming ITC (MMYYYY) or 'Deferred' to postpone."
-                  )
+                ? __("GSTR-3B for {0} is filed", [frm.doc.itc_claim_period])
+                : __("GSTR-3B period for claiming ITC (MMYYYY) or 'Deferred' to postpone."),
         );
     },
 
@@ -417,7 +462,7 @@ Object.assign(india_compliance, {
         frm.get_field(field).set_description(
             `<div class="d-flex indicator ${color}">
                 2A/2B Status:&nbsp;<strong>${frm.doc.reconciliation_status}</strong>
-            </div>`
+            </div>`,
         );
     },
 
@@ -425,14 +470,14 @@ Object.assign(india_compliance, {
         // returns a list of error messages if invoice number is invalid
         let message_list = [];
         if (invoice_number.length > 16) {
-            message_list.push(
-                "Transaction Name must be 16 characters or fewer to meet GST requirements"
-            );
+            message_list.push(__("Transaction Name must be 16 characters or fewer to meet GST requirements"));
         }
 
         if (!GST_INVOICE_NUMBER_FORMAT.test(invoice_number)) {
             message_list.push(
-                "Transaction Name should start with an alphanumeric character and can only contain alphanumeric characters, dash (-) and slash (/) to meet GST requirements."
+                __(
+                    "Transaction Name should start with an alphanumeric character and can only contain alphanumeric characters, dash (-) and slash (/) to meet GST requirements.",
+                ),
             );
         }
 
@@ -465,8 +510,19 @@ Object.assign(india_compliance, {
         }, 0);
     },
 
+    get_user_default_json(key) {
+        // Read a user default that stores a JSON value (e.g. a saved list of
+        // download sections/categories). Returns null when unset or malformed.
+        const raw = frappe.defaults.get_user_default(key);
+        try {
+            return raw ? JSON.parse(raw) : null;
+        } catch {
+            return null;
+        }
+    },
+
     set_last_month_as_default_period(report) {
-        report.filters.forEach(filter => {
+        report.filters.forEach((filter) => {
             if (filter.fieldname === "from_date") {
                 filter.default = this.last_month_start();
             }
@@ -496,17 +552,11 @@ Object.assign(india_compliance, {
         const current_year = today.getFullYear();
 
         if (current_month <= 3) {
-            return position === "start"
-                ? `${current_year - 1}-03-01`
-                : `${current_year - 1}-09-30`;
+            return position === "start" ? `${current_year - 1}-03-01` : `${current_year - 1}-09-30`;
         } else if (current_month <= 9) {
-            return position === "start"
-                ? `${current_year - 1}-10-01`
-                : `${current_year}-03-31`;
+            return position === "start" ? `${current_year - 1}-10-01` : `${current_year}-03-31`;
         } else {
-            return position === "start"
-                ? `${current_year}-04-01`
-                : `${current_year}-09-30`;
+            return position === "start" ? `${current_year}-04-01` : `${current_year}-09-30`;
         }
     },
 
@@ -517,7 +567,7 @@ Object.assign(india_compliance, {
         const start_year = 2017;
         const year_range = current_year - start_year + 1;
         const options = Array.from({ length: year_range }, (_, index) =>
-            (start_year + year_range - index - 1).toString()
+            (start_year + year_range - index - 1).toString(),
         );
 
         if (
@@ -531,10 +581,7 @@ Object.assign(india_compliance, {
     },
 
     primary_to_danger_btn(parent) {
-        parent.$wrapper
-            .find(".btn-primary")
-            .removeClass("btn-primary")
-            .addClass("btn-danger");
+        parent.$wrapper.find(".btn-primary").removeClass("btn-primary").addClass("btn-danger");
     },
 
     add_divider_to_btn_group(btn_group_name) {
@@ -551,31 +598,10 @@ Object.assign(india_compliance, {
             .addClass("text-danger");
     },
 
-    show_dismissable_alert(wrapper, message, alert_type = "primary", on_close = null) {
-        const alert = $(`
-            <div class="container">
-            <div
-                class="alert alert-${alert_type} alert-dismissable fade show d-flex justify-content-between border-0"
-                role="alert"
-            >
-                <div>${message}</div>
-                <button
-                    type="button"
-                    class="close"
-                    data-dismiss="alert"
-                    aria-label="Close"
-                    style="outline: 0px solid black !important"
-                >
-                    <span aria-hidden="true">&times;</span>
-                </button>
-            </div>
-            </div>
-        `).prependTo(wrapper);
-
-        alert.on("closed.bs.alert", () => {
-            if (on_close) on_close();
-        });
-
+    // same banner every other form uses. returns it, to wire links inside
+    show_doc_alert(frm, message, color = "blue", on_close = null) {
+        const alert = frm.dashboard.set_headline(`<div>${message}</div>`, color, !on_close);
+        if (on_close) alert.find(".close-message").on("click", on_close);
         return alert;
     },
 
@@ -592,11 +618,7 @@ Object.assign(india_compliance, {
 
         if (doc.doctype != "Stock Entry") return true;
 
-        if (
-            !["Material Transfer", "Material Issue", "Send to Subcontractor"].includes(
-                doc.purpose
-            )
-        ) {
+        if (!india_compliance.E_WAYBILL_STOCK_ENTRY_PURPOSES.includes(doc.purpose)) {
             return false;
         }
 
@@ -607,6 +629,10 @@ Object.assign(india_compliance, {
         if (!company) return false;
 
         return frappe.boot.indian_registered_companies?.includes(company);
+    },
+
+    get_inward_subcategory_options(sub_section) {
+        return Object.values(INWARD_SECTION_MAPPING[sub_section] || {}).flat();
     },
 });
 

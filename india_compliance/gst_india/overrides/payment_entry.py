@@ -1,11 +1,11 @@
 import frappe
+from erpnext.accounts.general_ledger import make_gl_entries
+from erpnext.accounts.utils import create_payment_ledger_entry
+from erpnext.controllers.accounts_controller import get_advance_payment_entries
 from frappe import _
 from frappe.contacts.doctype.address.address import get_default_address
 from frappe.query_builder.functions import Sum
 from frappe.utils import flt, getdate
-from erpnext.accounts.general_ledger import make_gl_entries
-from erpnext.accounts.utils import create_payment_ledger_entry
-from erpnext.controllers.accounts_controller import get_advance_payment_entries
 
 from india_compliance.gst_india.constants import TAX_TYPES
 from india_compliance.gst_india.overrides.transaction import (
@@ -22,9 +22,7 @@ from india_compliance.gst_india.utils import get_all_gst_accounts
 
 
 @frappe.whitelist()
-def get_outstanding_reference_documents(
-    args: str | dict | frappe._dict, validate: bool = False
-):
+def get_outstanding_reference_documents(args: str | dict | frappe._dict, validate: bool = False):
     from erpnext.accounts.doctype.payment_entry.payment_entry import (
         get_outstanding_reference_documents,
     )
@@ -32,16 +30,12 @@ def get_outstanding_reference_documents(
     reference_documents = get_outstanding_reference_documents(args, validate)
 
     invoice_list = [
-        item["voucher_no"]
-        for item in reference_documents
-        if item["voucher_type"] == "Purchase Invoice"
+        item["voucher_no"] for item in reference_documents if item["voucher_type"] == "Purchase Invoice"
     ]
     if not invoice_list:
         return reference_documents
 
-    reconciliation_status_dict = get_reconciliation_status_for_invoice_list(
-        invoice_list
-    )
+    reconciliation_status_dict = get_reconciliation_status_for_invoice_list(invoice_list)
 
     for d in reference_documents:
         d["reconciliation_status"] = reconciliation_status_dict.get(d["voucher_no"], "")
@@ -70,15 +64,9 @@ def onload(doc, method=None):
     if not doc.references:
         return
 
-    invoice_list = [
-        x.reference_name
-        for x in doc.references
-        if x.reference_doctype == "Purchase Invoice"
-    ]
+    invoice_list = [x.reference_name for x in doc.references if x.reference_doctype == "Purchase Invoice"]
 
-    reconciliation_status_dict = get_reconciliation_status_for_invoice_list(
-        invoice_list
-    )
+    reconciliation_status_dict = get_reconciliation_status_for_invoice_list(invoice_list)
 
     doc.set_onload("reconciliation_status_dict", reconciliation_status_dict)
 
@@ -96,9 +84,7 @@ def validate(doc, method=None):
         set_gst_tax_type(doc)
         for row in doc.taxes:
             if row.gst_tax_type in TAX_TYPES and row.tax_amount != 0:
-                frappe.throw(
-                    _("GST Taxes are not allowed for Supplier Advance Payment Entry")
-                )
+                frappe.throw(_("GST Taxes are not allowed for Supplier Advance Payment Entry"))
 
 
 def on_submit(doc, method=None):
@@ -109,7 +95,8 @@ def on_submit(doc, method=None):
 
 
 def on_update_after_submit(doc, method=None):
-    make_gst_revesal_entry_from_advance_payment(doc)
+    # outstanding reduced by allocated_amount via_reconciliation (see reconcile_against_document)
+    make_gst_revesal_entry_from_advance_payment(doc, via_reconciliation=True)
 
 
 def before_cancel(doc, method=None):
@@ -127,9 +114,7 @@ def validate_backdated_transaction(doc, action="submit"):
 
 
 @frappe.whitelist()
-def update_party_details(
-    party_details: str | dict | frappe._dict, doctype: str, company: str
-):
+def update_party_details(party_details: str | dict | frappe._dict, doctype: str, company: str):
     party_details = frappe.parse_json(party_details)
 
     address = get_default_address("Customer", party_details.get("customer"))
@@ -155,7 +140,7 @@ def update_party_details(
     return response
 
 
-def make_gst_revesal_entry_from_advance_payment(doc):
+def make_gst_revesal_entry_from_advance_payment(doc, via_reconciliation=False):
     """
     This functionality aims to create a GST reversal entry where GST was paid in advance
 
@@ -163,7 +148,7 @@ def make_gst_revesal_entry_from_advance_payment(doc):
     On Update after Submit: Creates GLEs for new references. Creates PLEs for all references.
     """
     gl_dict = []
-    update_gl_for_advance_gst_reversal(gl_dict, doc)
+    update_gl_for_advance_gst_reversal(gl_dict, doc, via_reconciliation)
 
     if not gl_dict:
         return
@@ -172,7 +157,7 @@ def make_gst_revesal_entry_from_advance_payment(doc):
     make_gl_entries(gl_dict)
 
 
-def update_gl_for_advance_gst_reversal(gl_dict, doc):
+def update_gl_for_advance_gst_reversal(gl_dict, doc, via_reconciliation=False):
     if not doc.taxes:
         return
 
@@ -180,10 +165,10 @@ def update_gl_for_advance_gst_reversal(gl_dict, doc):
         if row.reference_doctype not in ("Sales Invoice", "Journal Entry"):
             continue
 
-        gl_dict.extend(_get_gl_for_advance_gst_reversal(doc, row))
+        gl_dict.extend(_get_gl_for_advance_gst_reversal(doc, row, via_reconciliation))
 
 
-def _get_gl_for_advance_gst_reversal(payment_entry, reference_row):
+def _get_gl_for_advance_gst_reversal(payment_entry, reference_row, via_reconciliation=False):
     gl_dicts = []
     voucher_date = frappe.db.get_value(
         reference_row.reference_doctype, reference_row.reference_name, "posting_date"
@@ -229,28 +214,29 @@ def _get_gl_for_advance_gst_reversal(payment_entry, reference_row):
 
         # All existing PLE are delinked and new ones are created everytime on update
         # refer: reconcile_against_document in utils.py
-        create_payment_ledger_entry(
-            [gl_entry], update_outstanding="No", cancel=0, adv_adj=1
-        )
+        create_payment_ledger_entry([gl_entry], update_outstanding="No", cancel=0, adv_adj=1)
 
         return gl_dicts
 
-    if not frappe.flags.gst_excess_allocation_validated:
-        total_allocation = total_amount + reference_row.allocated_amount
-        excess_allocation = total_allocation - reference_row.outstanding_amount
+    outstanding_amount = reference_row.outstanding_amount
+    if via_reconciliation:
+        # add back allocated_amount to outstanding_amount for comparison
+        outstanding_amount += reference_row.allocated_amount
 
-        if excess_allocation > 1:
-            frappe.throw(
-                _(
-                    "Outstanding amount {0} is less than the total allocated amount"
-                    " with taxes {1} for {2} {3}"
-                ).format(
-                    reference_row.outstanding_amount,
-                    total_allocation,
-                    reference_row.reference_doctype,
-                    reference_row.reference_name,
-                )
+    total_allocation = total_amount + reference_row.allocated_amount
+    excess_allocation = total_allocation - outstanding_amount
+
+    if excess_allocation > 1:
+        frappe.throw(
+            _(
+                "Outstanding amount {0} is less than the total allocated amount with taxes {1} for {2} {3}"
+            ).format(
+                outstanding_amount,
+                total_allocation,
+                reference_row.reference_doctype,
+                reference_row.reference_name,
             )
+        )
 
     gl_dicts.append(gl_entry)
 
@@ -295,40 +281,45 @@ def get_proportionate_taxes_for_reversal(payment_entry, reference_row):
         return
 
     # Ensure there is no rounding error
-    if (
-        not payment_entry.unallocated_amount
-        and payment_entry.references[-1].idx == reference_row.idx
-    ):
+    if not payment_entry.unallocated_amount and payment_entry.references[-1].idx == reference_row.idx:
         return balance_taxes(payment_entry, reference_row, taxes)
 
     return get_proportionate_taxes_for_row(payment_entry, reference_row, taxes)
 
 
+def get_taxable_base_amount(payment_entry):
+    # taxable value. exclusive -> base_paid_amount, inclusive -> base_paid_amount - included_taxes
+    return flt(payment_entry.base_paid_amount) - flt(payment_entry.get_included_taxes())
+
+
+def get_proportionate_tax(amount, base_allocated_amount, base_amount):
+    # base_amount is 0 only when paid amount is fully tax (no taxable base) -> nothing to reverse
+    if not base_amount:
+        return 0
+
+    return flt(amount * base_allocated_amount / base_amount, 2)
+
+
 def get_proportionate_taxes_for_row(payment_entry, reference_row, taxes):
-    base_allocated_amount = payment_entry.calculate_base_allocated_amount_for_reference(
-        reference_row
-    )
+    base_allocated_amount = payment_entry.calculate_base_allocated_amount_for_reference(reference_row)
+    base_amount = get_taxable_base_amount(payment_entry)
     for account, amount in taxes.items():
-        taxes[account] = flt(
-            amount * base_allocated_amount / payment_entry.base_paid_amount, 2
-        )
+        taxes[account] = get_proportionate_tax(amount, base_allocated_amount, base_amount)
 
     return taxes
 
 
 def balance_taxes(payment_entry, reference_row, taxes):
+    base_amount = get_taxable_base_amount(payment_entry)
     for account, amount in taxes.items():
         for allocation_row in payment_entry.references:
             if allocation_row.reference_name == reference_row.reference_name:
                 continue
 
-            taxes[account] = taxes[account] - flt(
-                amount
-                * payment_entry.calculate_base_allocated_amount_for_reference(
-                    allocation_row
-                )
-                / payment_entry.base_paid_amount,
-                2,
+            taxes[account] = taxes[account] - get_proportionate_tax(
+                amount,
+                payment_entry.calculate_base_allocated_amount_for_reference(allocation_row),
+                base_amount,
             )
 
     return taxes
@@ -396,7 +387,7 @@ def adjust_allocations_for_taxes_in_payment_reconciliation(doc):
         tax.payment_entry: frappe._dict(
             {
                 **tax,
-                "paid_proportion": tax.paid_amount / (tax.paid_amount + tax.tax_amount),
+                "paid_proportion": tax.taxable_amount / (tax.taxable_amount + tax.tax_amount),
             }
         )
         for tax in taxes.values()
@@ -410,12 +401,34 @@ def adjust_allocations_for_taxes_in_payment_reconciliation(doc):
         row.update(
             {
                 "amount": tax_row.unallocated_amount,
-                "allocated_amount": flt(
-                    row.get("allocated_amount", 0) * tax_row.paid_proportion, 2
-                ),
+                "allocated_amount": flt(row.get("allocated_amount", 0) * tax_row.paid_proportion, 2),
                 "unreconciled_amount": tax_row.unallocated_amount,
             }
         )
+
+
+def get_included_taxes_query(gst_accounts, payment_entries=None):
+    """
+    Subquery summing the GST embedded in paid_amount per Payment Entry
+    (taxes flagged `included_in_paid_amount` on tax-inclusive advances).
+    Exclusive payments have no such taxes, so they contribute no row -> 0.
+    """
+    pe_tax = frappe.qb.DocType("Advance Taxes and Charges")
+    query = (
+        frappe.qb.from_(pe_tax)
+        .select(
+            pe_tax.parent,
+            Sum(pe_tax.base_tax_amount).as_("included_taxes"),
+        )
+        .where(pe_tax.included_in_paid_amount == 1)
+        .where(pe_tax.account_head.isin(gst_accounts))
+        .groupby(pe_tax.parent)
+    )
+
+    if payment_entries is not None:
+        query = query.where(pe_tax.parent.isin(payment_entries))
+
+    return query
 
 
 def get_taxes_summary(company, payment_entries):
@@ -424,9 +437,7 @@ def get_taxes_summary(company, payment_entries):
         return {}
 
     references = [
-        advance.reference_name
-        for advance in payment_entries
-        if advance.reference_type == "Payment Entry"
+        advance.reference_name for advance in payment_entries if advance.reference_type == "Payment Entry"
     ]
 
     if not references:
@@ -454,10 +465,23 @@ def get_taxes_summary(company, payment_entries):
         # It will still cause issues where
         # other taxes are charged like TDS and GST Account are specified in deduction table.
         .where(pe.total_taxes_and_charges != 0)
-        .groupby(gl_entry.voucher_no)
+        # group by Payment Entry PK so postgres allows selecting other pe.* fields
+        .groupby(pe.name)
         .run(as_dict=True)
     )
 
     taxes = {tax.payment_entry: tax for tax in taxes}
+
+    if not taxes:
+        return taxes
+
+    # carve out GST embedded in paid_amount (included_in_paid_amount); exclusive -> 0
+    included_taxes = get_included_taxes_query(gst_accounts, payment_entries=list(taxes.keys())).run(
+        as_dict=True
+    )
+    included_taxes = {row.parent: flt(row.included_taxes) for row in included_taxes}
+
+    for payment_entry, tax in taxes.items():
+        tax.taxable_amount = flt(tax.paid_amount) - included_taxes.get(payment_entry, 0)
 
     return taxes

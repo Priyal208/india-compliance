@@ -2,15 +2,18 @@
 # For license information, please see license.txt
 import re
 from itertools import combinations
-
-from pypika import Order
+from typing import ClassVar
 
 import frappe
 from frappe.query_builder import Case, Criterion
-from frappe.query_builder.functions import Date, IfNull, Sum
+from frappe.query_builder.functions import Date, IfNull, Max, Sum
 from frappe.utils import cint, flt, getdate
+from pypika import Order
 
-from india_compliance.gst_india.constants import GST_REFUND_TAX_TYPES
+from india_compliance.gst_india.constants import (
+    GST_REFUND_TAX_TYPES,
+    SERVICE_HSN_PREFIX,
+)
 from india_compliance.gst_india.utils import (
     get_escaped_name,
     get_full_gst_uom,
@@ -19,42 +22,47 @@ from india_compliance.gst_india.utils import (
 from india_compliance.gst_india.utils.gstr_1 import (
     CATEGORY_SUB_CATEGORY_MAPPING,
     HSN_BIFURCATION_FROM,
-    GSTR1_B2B_InvoiceType,
-    GSTR1_Category,
-    GSTR1_SubCategory,
+    B2BInvoiceType,
+    Category,
+    SubCategory,
     get_b2c_limit,
 )
+from india_compliance.gst_returns.helpers import split
 
 CATEGORY_CONDITIONS = {
-    GSTR1_Category.B2B.value: {
+    Category.ECOM_RCM.value: {
+        "category": "is_ecom_rcm",
+        "sub_category": None,
+    },
+    Category.B2B.value: {
         "category": "is_b2b_invoice",
         "sub_category": "set_for_b2b",
     },
-    GSTR1_Category.B2CL.value: {
+    Category.B2CL.value: {
         "category": "is_b2cl_invoice",
         "sub_category": "set_for_b2cl",
     },
-    GSTR1_Category.EXP.value: {
+    Category.EXP.value: {
         "category": "is_export_invoice",
         "sub_category": "set_for_exports",
     },
-    GSTR1_Category.B2CS.value: {
+    Category.B2CS.value: {
         "category": "is_b2cs_invoice",
         "sub_category": "set_for_b2cs",
     },
-    GSTR1_Category.NIL_EXEMPT.value: {
+    Category.NIL_EXEMPT.value: {
         "category": "is_nil_rated_exempted_non_gst_invoice",
         "sub_category": "set_for_nil_exp_non_gst",
     },
-    GSTR1_Category.CDNR.value: {
+    Category.CDNR.value: {
         "category": "is_cdnr_invoice",
         "sub_category": "set_for_cdnr",
     },
-    GSTR1_Category.CDNUR.value: {
+    Category.CDNUR.value: {
         "category": "is_cdnur_invoice",
         "sub_category": "set_for_cdnur",
     },
-    GSTR1_Category.SUPECOM.value: {
+    Category.SUPECOM.value: {
         "category": "is_ecommerce_sales_invoice",
         "sub_category": "set_for_ecommerce_supply_type",
     },
@@ -62,9 +70,7 @@ CATEGORY_CONDITIONS = {
 
 
 class GSTR1Query:
-    def __init__(
-        self, filters=None, additional_si_columns=None, additional_si_item_columns=None
-    ):
+    def __init__(self, filters=None, additional_si_columns=None, additional_si_item_columns=None):
         self.si = frappe.qb.DocType("Sales Invoice")
         self.si_item = frappe.qb.DocType("Sales Invoice Item")
         self.si_taxes = frappe.qb.DocType("Sales Taxes and Charges")
@@ -106,20 +112,14 @@ class GSTR1Query:
                 self.si.shipping_bill_date,
                 self.si.gst_category,
                 IfNull(self.si_item.gst_treatment, "Not Defined").as_("gst_treatment"),
-                (
-                    self.si_item.cgst_rate
-                    + self.si_item.sgst_rate
-                    + self.si_item.igst_rate
-                ).as_("gst_rate"),
+                (self.si_item.cgst_rate + self.si_item.sgst_rate + self.si_item.igst_rate).as_("gst_rate"),
                 self.si_item.taxable_value,
                 self.si_item.cgst_amount,
                 self.si_item.sgst_amount,
                 self.si_item.igst_amount,
                 self.si_item.cess_amount,
                 self.si_item.cess_non_advol_amount,
-                (self.si_item.cess_amount + self.si_item.cess_non_advol_amount).as_(
-                    "total_cess_amount"
-                ),
+                (self.si_item.cess_amount + self.si_item.cess_non_advol_amount).as_("total_cess_amount"),
                 (
                     self.si_item.cgst_amount
                     + self.si_item.sgst_amount
@@ -170,14 +170,10 @@ class GSTR1Query:
             query = query.where(self.si.company_gstin == self.filters.company_gstin)
 
         if self.filters.from_date:
-            query = query.where(
-                Date(self.si.posting_date) >= getdate(self.filters.from_date)
-            )
+            query = query.where(Date(self.si.posting_date) >= getdate(self.filters.from_date))
 
         if self.filters.to_date:
-            query = query.where(
-                Date(self.si.posting_date) <= getdate(self.filters.to_date)
-            )
+            query = query.where(Date(self.si.posting_date) <= getdate(self.filters.to_date))
 
         return query
 
@@ -185,9 +181,7 @@ class GSTR1Query:
         return (
             frappe.qb.from_(self.si_taxes)
             .select(
-                Sum(self.si_taxes.base_tax_amount_after_discount_amount).as_(
-                    "refund_amount"
-                ),
+                Sum(self.si_taxes.base_tax_amount_after_discount_amount).as_("refund_amount"),
                 self.si_taxes.parent,
             )
             .where(self.si_taxes.gst_tax_type.isin(GST_REFUND_TAX_TYPES))
@@ -240,9 +234,7 @@ class GSTR1Conditions:
     @cache_invoice_condition
     def is_nil_rated_exempted_or_non_gst(self, invoice):
         return not self.is_export(invoice) and (
-            self.is_nil_rated(invoice)
-            or self.is_exempted(invoice)
-            or self.is_non_gst(invoice)
+            self.is_nil_rated(invoice) or self.is_exempted(invoice) or self.is_non_gst(invoice)
         )
 
     @cache_invoice_condition
@@ -250,15 +242,16 @@ class GSTR1Conditions:
         return invoice.is_return or invoice.is_debit_note
 
     @cache_invoice_condition
+    def is_ecom_rcm(self, invoice):
+        return bool(invoice.get("ecommerce_gstin")) and bool(invoice.get("is_reverse_charge"))
+
+    @cache_invoice_condition
     def has_gstin_and_is_not_export(self, invoice):
         return invoice.billing_address_gstin and not self.is_export(invoice)
 
     @cache_invoice_condition
     def is_export(self, invoice):
-        return (
-            invoice.place_of_supply == "96-Other Countries"
-            and invoice.gst_category == "Overseas"
-        )
+        return invoice.place_of_supply == "96-Other Countries" and invoice.gst_category == "Overseas"
 
     @cache_invoice_condition
     def is_inter_state(self, invoice):
@@ -276,42 +269,41 @@ class GSTR1Conditions:
             else invoice.invoice_total
         )
 
-        return (
-            abs(invoice_total) > get_b2c_limit(invoice.posting_date)
-        ) and self.is_inter_state(invoice)
+        return (abs(invoice_total) > get_b2c_limit(invoice.posting_date)) and self.is_inter_state(invoice)
 
     @cache_invoice_condition
     def is_b2cl_inv(self, invoice):
-        return abs(invoice.invoice_total) > get_b2c_limit(
-            invoice.posting_date
-        ) and self.is_inter_state(invoice)
+        return abs(invoice.invoice_total) > get_b2c_limit(invoice.posting_date) and self.is_inter_state(
+            invoice
+        )
 
 
 class GSTR1CategoryConditions(GSTR1Conditions):
     def is_nil_rated_exempted_non_gst_invoice(self, invoice):
-        return (
-            self.is_nil_rated(invoice)
-            or self.is_exempted(invoice)
-            or self.is_non_gst(invoice)
+        return not self.is_ecom_rcm(invoice) and (
+            self.is_nil_rated(invoice) or self.is_exempted(invoice) or self.is_non_gst(invoice)
         )
 
     def is_b2b_invoice(self, invoice):
         return (
-            not self.is_nil_rated_exempted_or_non_gst(invoice)
+            not self.is_ecom_rcm(invoice)
+            and not self.is_nil_rated_exempted_or_non_gst(invoice)
             and not self.is_cn_dn(invoice)
             and self.has_gstin_and_is_not_export(invoice)
         )
 
     def is_export_invoice(self, invoice):
         return (
-            not self.is_nil_rated_exempted_or_non_gst(invoice)
+            not self.is_ecom_rcm(invoice)
+            and not self.is_nil_rated_exempted_or_non_gst(invoice)
             and not self.is_cn_dn(invoice)
             and self.is_export(invoice)
         )
 
     def is_b2cl_invoice(self, invoice):
         return (
-            not self.is_nil_rated_exempted_or_non_gst(invoice)
+            not self.is_ecom_rcm(invoice)
+            and not self.is_nil_rated_exempted_or_non_gst(invoice)
             and not self.is_cn_dn(invoice)
             and not self.has_gstin_and_is_not_export(invoice)
             and not self.is_export(invoice)
@@ -320,22 +312,26 @@ class GSTR1CategoryConditions(GSTR1Conditions):
 
     def is_b2cs_invoice(self, invoice):
         return (
-            not self.is_nil_rated_exempted_or_non_gst(invoice)
+            not self.is_ecom_rcm(invoice)
+            and not self.is_nil_rated_exempted_or_non_gst(invoice)
             and not self.has_gstin_and_is_not_export(invoice)
             and not self.is_export(invoice)
-            and (not self.is_b2cl_cn_dn(invoice) or not self.is_b2cl_inv(invoice))
+            and not self.is_b2cl_cn_dn(invoice)
+            and not self.is_b2cl_inv(invoice)
         )
 
     def is_cdnr_invoice(self, invoice):
         return (
-            not self.is_nil_rated_exempted_or_non_gst(invoice)
+            not self.is_ecom_rcm(invoice)
+            and not self.is_nil_rated_exempted_or_non_gst(invoice)
             and self.is_cn_dn(invoice)
             and self.has_gstin_and_is_not_export(invoice)
         )
 
     def is_cdnur_invoice(self, invoice):
         return (
-            not self.is_nil_rated_exempted_or_non_gst(invoice)
+            not self.is_ecom_rcm(invoice)
+            and not self.is_nil_rated_exempted_or_non_gst(invoice)
             and self.is_cn_dn(invoice)
             and not self.has_gstin_and_is_not_export(invoice)
             and (self.is_export(invoice) or self.is_b2cl_cn_dn(invoice))
@@ -351,20 +347,20 @@ class GSTR1Subcategory(GSTR1CategoryConditions):
 
     def set_for_b2cl(self, invoice):
         # NO INVOICE VALUE
-        invoice.invoice_sub_category = GSTR1_SubCategory.B2CL.value
+        invoice.invoice_sub_category = SubCategory.B2CL.value
 
     def set_for_exports(self, invoice):
         if invoice.is_export_with_gst:
-            invoice.invoice_sub_category = GSTR1_SubCategory.EXPWP.value
+            invoice.invoice_sub_category = SubCategory.EXPWP.value
             invoice.invoice_type = "WPAY"
 
         else:
-            invoice.invoice_sub_category = GSTR1_SubCategory.EXPWOP.value
+            invoice.invoice_sub_category = SubCategory.EXPWOP.value
             invoice.invoice_type = "WOPAY"
 
     def set_for_b2cs(self, invoice):
         # NO INVOICE VALUE
-        invoice.invoice_sub_category = GSTR1_SubCategory.B2CS.value
+        invoice.invoice_sub_category = SubCategory.B2CS.value
 
     def set_for_nil_exp_non_gst(self, invoice):
         # INVOICE TYPE
@@ -375,14 +371,14 @@ class GSTR1Subcategory(GSTR1CategoryConditions):
         supply_type = "Inter-State" if is_interstate else "Intra-State"
 
         invoice.invoice_type = f"{supply_type} supplies to {gst_registration} persons"
-        invoice.invoice_sub_category = GSTR1_SubCategory.NIL_EXEMPT.value
+        invoice.invoice_sub_category = SubCategory.NIL_EXEMPT.value
 
     def set_for_cdnr(self, invoice):
         self._set_invoice_type_for_b2b_and_cdnr(invoice)
-        invoice.invoice_sub_category = GSTR1_SubCategory.CDNR.value
+        invoice.invoice_sub_category = SubCategory.CDNR.value
 
     def set_for_cdnur(self, invoice):
-        invoice.invoice_sub_category = GSTR1_SubCategory.CDNUR.value
+        invoice.invoice_sub_category = SubCategory.CDNUR.value
         if self.is_export(invoice):
             if invoice.is_export_with_gst:
                 invoice.invoice_type = "EXPWP"
@@ -396,46 +392,49 @@ class GSTR1Subcategory(GSTR1CategoryConditions):
 
     def set_for_ecommerce_supply_type(self, invoice):
         if invoice.is_reverse_charge:
-            invoice.ecommerce_supply_type = GSTR1_SubCategory.SUPECOM_9_5.value
+            invoice.ecommerce_supply_type = SubCategory.SUPECOM_9_5.value
             return
 
-        invoice.ecommerce_supply_type = GSTR1_SubCategory.SUPECOM_52.value
+        invoice.ecommerce_supply_type = SubCategory.SUPECOM_52.value
 
     def _set_invoice_type_for_b2b_and_cdnr(self, invoice):
         if invoice.gst_category == "Deemed Export":
-            invoice.invoice_type = GSTR1_B2B_InvoiceType.DE.value
-            invoice.invoice_sub_category = GSTR1_SubCategory.DE.value
+            invoice.invoice_type = B2BInvoiceType.DE.value
+            invoice.invoice_sub_category = SubCategory.DE.value
 
         elif invoice.gst_category == "SEZ":
             if invoice.is_export_with_gst:
-                invoice.invoice_type = GSTR1_B2B_InvoiceType.SEWP.value
-                invoice.invoice_sub_category = GSTR1_SubCategory.SEZWP.value
+                invoice.invoice_type = B2BInvoiceType.SEWP.value
+                invoice.invoice_sub_category = SubCategory.SEZWP.value
 
             else:
-                invoice.invoice_type = GSTR1_B2B_InvoiceType.SEWOP.value
-                invoice.invoice_sub_category = GSTR1_SubCategory.SEZWOP.value
+                invoice.invoice_type = B2BInvoiceType.SEWOP.value
+                invoice.invoice_sub_category = SubCategory.SEZWOP.value
 
         elif invoice.is_reverse_charge:
-            invoice.invoice_type = GSTR1_B2B_InvoiceType.R.value
-            invoice.invoice_sub_category = GSTR1_SubCategory.B2B_REVERSE_CHARGE.value
+            invoice.invoice_type = B2BInvoiceType.R.value
+            invoice.invoice_sub_category = SubCategory.B2B_REVERSE_CHARGE.value
 
         else:
-            invoice.invoice_type = GSTR1_B2B_InvoiceType.R.value
-            invoice.invoice_sub_category = GSTR1_SubCategory.B2B_REGULAR.value
+            invoice.invoice_type = B2BInvoiceType.R.value
+            invoice.invoice_sub_category = SubCategory.B2B_REGULAR.value
 
     def set_hsn_sub_category(self, invoice, bifurcate_hsn):
+        if invoice.invoice_category == Category.ECOM_RCM.value:
+            return
+
         if not bifurcate_hsn:
-            invoice.hsn_sub_category = GSTR1_SubCategory.HSN.value
+            invoice.hsn_sub_category = SubCategory.HSN.value
 
         elif invoice.gst_category in ("Unregistered", "Overseas"):
-            invoice.hsn_sub_category = GSTR1_SubCategory.HSN_B2C.value
+            invoice.hsn_sub_category = SubCategory.HSN_B2C.value
 
         else:
-            invoice.hsn_sub_category = GSTR1_SubCategory.HSN_B2B.value
+            invoice.hsn_sub_category = SubCategory.HSN_B2B.value
 
 
 class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
-    AMOUNT_FIELDS = {
+    AMOUNT_FIELDS: ClassVar[dict[str, float]] = {
         "taxable_value": 0,
         "igst_amount": 0,
         "cgst_amount": 0,
@@ -455,7 +454,7 @@ class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
             self.assign_categories(invoice)
             self.set_hsn_sub_category(invoice, bifurcate_hsn)
 
-            if invoice.gst_hsn_code and invoice.gst_hsn_code.startswith("99"):
+            if invoice.gst_hsn_code and invoice.gst_hsn_code.startswith(SERVICE_HSN_PREFIX):
                 invoice["uom"] = "OTH-OTHERS"
                 invoice["qty"] = 0
                 continue
@@ -467,6 +466,35 @@ class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
                 gst_uom = get_full_gst_uom(uom, settings)
                 identified_uom[uom] = gst_uom
                 invoice["uom"] = gst_uom
+
+        self.rounding_difference = self.settle_amounts(invoices)
+
+    def settle_amounts(self, invoices):
+        """Round the amounts once, here, so every report reads the same figures.
+
+        The total per invoice per tax rate is what has to tie back to the ledger, so it is rounded
+        exactly as before. Each row then takes a share of that total, which is why the rows still
+        add back to it however a report later groups them -- by invoice, or by HSN across invoices.
+
+        Returns what rounding cost, for the summary to report.
+        """
+        rows_by_rate = {}
+        for invoice in invoices:
+            key = (invoice.get("invoice_no"), flt(invoice.get("gst_rate")))
+            rows_by_rate.setdefault(key, []).append(invoice)
+
+        lost = dict.fromkeys(self.AMOUNT_FIELDS, 0.0)
+
+        for rows in rows_by_rate.values():
+            for field in self.AMOUNT_FIELDS:
+                weights = [row.get(field) or 0 for row in rows]
+                total = flt(sum(weights), 2)
+                lost[field] += sum(weights) - total
+
+                for row, share in zip(rows, split(total, weights), strict=True):
+                    row[field] = share
+
+        return lost
 
     def assign_categories(self, invoice):
         if not invoice.invoice_sub_category:
@@ -484,8 +512,9 @@ class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
 
     def set_invoice_sub_category_and_type(self, invoice):
         category = invoice.invoice_category
-        function = CATEGORY_CONDITIONS[category]["sub_category"]
-        getattr(self, function, None)(invoice)
+        function = CATEGORY_CONDITIONS[category].get("sub_category")
+        if function:
+            getattr(self, function, None)(invoice)
 
     def get_invoices_for_item_wise_summary(self):
         query = self.get_base_query()
@@ -493,38 +522,66 @@ class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
         return query.run(as_dict=True)
 
     def get_invoices_for_hsn_wise_summary(self):
-        query = self.get_base_query()
+        base = self.get_base_query()
+
+        group_by = ("invoice_no", "gst_hsn_code", "gst_rate", "gst_treatment", "uom")
+        summed = (
+            "qty",
+            "taxable_value",
+            "cgst_amount",
+            "sgst_amount",
+            "igst_amount",
+            "total_cess_amount",
+            "total_tax",
+            "total_amount",
+        )
+        wrapped = (
+            "item_code",
+            "billing_address_gstin",
+            "company_gstin",
+            "customer_name",
+            "posting_date",
+            "place_of_supply",
+            "is_reverse_charge",
+            "ecommerce_gstin",
+            "is_return",
+            "is_debit_note",
+            "return_against",
+            "is_export_with_gst",
+            "shipping_port_code",
+            "shipping_bill_number",
+            "shipping_bill_date",
+            "gst_category",
+            "cess_amount",
+            "cess_non_advol_amount",
+            "invoice_total",
+            "returned_invoice_total",
+            *self.additional_si_columns,
+            *self.additional_si_item_columns,
+        )
+
+        def field(column):
+            return getattr(base, column)
 
         query = (
-            frappe.qb.from_(query)
+            frappe.qb.from_(base)
             .select(
-                "*",
-                Sum(query.qty).as_("qty"),
-                Sum(query.taxable_value).as_("taxable_value"),
-                Sum(query.cgst_amount).as_("cgst_amount"),
-                Sum(query.sgst_amount).as_("sgst_amount"),
-                Sum(query.igst_amount).as_("igst_amount"),
-                Sum(query.total_cess_amount).as_("total_cess_amount"),
-                Sum(query.total_tax).as_("total_tax"),
-                Sum(query.total_amount).as_("total_amount"),
+                *(field(col) for col in group_by),
+                *(Sum(field(col)).as_(col) for col in summed),
+                *(Max(field(col)).as_(col) for col in wrapped),
             )
-            .groupby(
-                query.invoice_no,
-                query.gst_hsn_code,
-                query.gst_rate,
-                query.gst_treatment,
-                query.uom,
-            )
+            .groupby(*(field(col) for col in group_by))
             .orderby(
-                query.posting_date, query.invoice_no, query.item_code, order=Order.desc
+                Max(field("posting_date")),
+                field("invoice_no"),
+                Max(field("item_code")),
+                order=Order.desc,
             )
         )
 
         return query.run(as_dict=True)
 
-    def get_filtered_invoices(
-        self, invoices, invoice_category=None, invoice_sub_category=None
-    ):
+    def get_filtered_invoices(self, invoices, invoice_category=None, invoice_sub_category=None):
         filtered_invoices = []
         functions = CATEGORY_CONDITIONS.get(invoice_category)
         condition = getattr(self, functions["category"], None)
@@ -555,17 +612,17 @@ class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
         sub_category_summary = self.get_sub_category_summary()
 
         IGNORED_CATEGORIES = {
-            GSTR1_Category.AT,
-            GSTR1_Category.TXP,
-            GSTR1_Category.DOC_ISSUE,
-            GSTR1_Category.HSN,
+            Category.AT,
+            Category.TXP,
+            Category.DOC_ISSUE,
+            Category.HSN,
         }
 
         is_ecommerce_sales_enabled = frappe.get_cached_value(
             "GST Settings", None, "enable_sales_through_ecommerce_operators"
         )
         if not is_ecommerce_sales_enabled:
-            IGNORED_CATEGORIES.add(GSTR1_Category.SUPECOM)
+            IGNORED_CATEGORIES.add(Category.SUPECOM)
 
         for category, sub_categories in CATEGORY_SUB_CATEGORY_MAPPING.items():
             if category in IGNORED_CATEGORIES:
@@ -598,7 +655,7 @@ class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
 
         summary = {}
 
-        for category in GSTR1_SubCategory:
+        for category in SubCategory:
             category = category.value
             summary[category] = {
                 "description": category,
@@ -617,7 +674,8 @@ class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
             summary_row["unique_records"].add(row.invoice_no)
 
         for row in invoices:
-            _update_summary_row(row)
+            if row.get("invoice_sub_category"):
+                _update_summary_row(row)
 
             if row.ecommerce_gstin:
                 _update_summary_row(row, "ecommerce_supply_type")
@@ -628,9 +686,9 @@ class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
         return summary
 
     def update_overlaping_invoice_summary(self, sub_category_summary, final_summary):
-        nil_exempt = GSTR1_SubCategory.NIL_EXEMPT.value
-        supecom_52 = GSTR1_SubCategory.SUPECOM_52.value
-        supecom_9_5 = GSTR1_SubCategory.SUPECOM_9_5.value
+        nil_exempt = SubCategory.NIL_EXEMPT.value
+        supecom_52 = SubCategory.SUPECOM_52.value
+        supecom_9_5 = SubCategory.SUPECOM_9_5.value
 
         # Get Unique Taxable Invoices
         unique_invoices = set()
@@ -667,9 +725,7 @@ class GSTR1Invoices(GSTR1Query, GSTR1Subcategory):
     def is_hsn_bifurcation_needed(self):
         # From GSTR-1
         if self.filters.get("month_or_quarter"):
-            from_date = getdate(
-                f"01-{self.filters.month_or_quarter}-{self.filters.year}"
-            )
+            from_date = getdate(f"01-{self.filters.month_or_quarter}-{self.filters.year}")
         else:
             from_date = getdate(self.filters.from_date)
 
@@ -680,7 +736,6 @@ class GSTR1DocumentIssuedSummary:
     def __init__(self, filters):
         self.filters = filters
         self.sales_invoice = frappe.qb.DocType("Sales Invoice")
-        self.sales_invoice_item = frappe.qb.DocType("Sales Invoice Item")
         self.purchase_invoice = frappe.qb.DocType("Purchase Invoice")
         self.stock_entry = frappe.qb.DocType("Stock Entry")
         self.subcontracting_receipt = frappe.qb.DocType("Subcontracting Receipt")
@@ -705,9 +760,7 @@ class GSTR1DocumentIssuedSummary:
                 seperated_data,
             ) in self.seperate_data_by_nature_of_document(data, doctype).items():
                 summarized_data.extend(
-                    self.seperate_data_by_naming_series(
-                        seperated_data, nature_of_document
-                    )
+                    self.seperate_data_by_naming_series(seperated_data, nature_of_document)
                 )
 
         return summarized_data
@@ -742,11 +795,7 @@ class GSTR1DocumentIssuedSummary:
                 .as_("same_gstin_billing"),
             )
             .where(doctype.company == self.filters.company)
-            .where(
-                doctype.posting_date.between(
-                    self.filters.from_date, self.filters.to_date
-                )
-            )
+            .where(doctype.posting_date.between(self.filters.from_date, self.filters.to_date))
             .orderby(doctype.name)
             .groupby(doctype.name)
         )
@@ -772,19 +821,11 @@ class GSTR1DocumentIssuedSummary:
             self.sales_invoice.is_opening,
         ]
 
-        query = self.build_query(
+        return self.build_query(
             doctype=self.sales_invoice,
             party_gstin_field="billing_address_gstin",
             address_field="company_address",
             additional_selects=additional_selects,
-        )
-
-        return (
-            query.join(self.sales_invoice_item)
-            .on(self.sales_invoice.name == self.sales_invoice_item.parent)
-            .select(
-                self.sales_invoice_item.gst_treatment,
-            )
         )
 
     def get_query_for_purchase_invoice(self):
@@ -846,7 +887,7 @@ class GSTR1DocumentIssuedSummary:
             slice_indices.append(i)
 
         document_series_list = [
-            data[i:j] for i, j in zip([0] + slice_indices, slice_indices + [None])
+            data[i:j] for i, j in zip([0, *slice_indices], [*slice_indices, None], strict=False)
         ]
 
         for series in document_series_list:
@@ -863,9 +904,7 @@ class GSTR1DocumentIssuedSummary:
                     "total_submitted": total_submitted_count,
                     "cancelled": cancelled_count,
                     "total_draft": draft_count,
-                    "total_issued": draft_count
-                    + total_submitted_count
-                    + cancelled_count,
+                    "total_issued": draft_count + total_submitted_count + cancelled_count,
                 }
             )
 
@@ -937,22 +976,14 @@ class GSTR1DocumentIssuedSummary:
 
         for doc in data:
             if not validate_invoice_number(doc, throw=False):
-                nature_of_document[
-                    "Excluded from Report (Invalid Invoice Number)"
-                ].append(doc)
+                nature_of_document["Excluded from Report (Invalid Invoice Number)"].append(doc)
 
             elif doc.is_opening == "Yes":
-                nature_of_document["Excluded from Report (Is Opening Entry)"].append(
-                    doc
-                )
+                nature_of_document["Excluded from Report (Is Opening Entry)"].append(doc)
             elif doc.same_gstin_billing:
-                nature_of_document["Excluded from Report (Same GSTIN Billing)"].append(
-                    doc
-                )
+                nature_of_document["Excluded from Report (Same GSTIN Billing)"].append(doc)
             elif doctype == "Purchase Invoice":
-                nature_of_document[
-                    "Invoices for inward supply from unregistered person"
-                ].append(doc)
+                nature_of_document["Invoices for inward supply from unregistered person"].append(doc)
             elif doctype == "Stock Entry" or doctype == "Subcontracting Receipt":
                 nature_of_document["Delivery Challan for job work"].append(doc)
             # for Sales Invoice
@@ -973,10 +1004,8 @@ class GSTR1DocumentIssuedSummary:
 
         for doc in data:
             if (
-                doc.amended_from
-                and len(doc.amended_from) != len(doc.name)
-                or doc.amended_from in amended_dict
-            ):
+                doc.amended_from and len(doc.amended_from) != len(doc.name)
+            ) or doc.amended_from in amended_dict:
                 amended_dict[doc.name] = doc
                 data_dict.pop(doc.name)
 
@@ -1003,9 +1032,22 @@ class GSTR11A11BData:
         return self.process_data(records)
 
     def get_11A_query(self):
+        # For tax-inclusive payments the GST is embedded in paid_amount, exclusive -> 0.
+        from india_compliance.gst_india.overrides.payment_entry import (
+            get_included_taxes_query,
+        )
+
+        gst_accounts_list = [account_head for account_head in self.gst_accounts.values() if account_head]
+        included_taxes_query = get_included_taxes_query(gst_accounts_list)
         return (
             self.get_query("Advances")
-            .select(self.pe.paid_amount.as_("taxable_value"))
+            .left_join(included_taxes_query)
+            .on(included_taxes_query.parent == self.pe.name)
+            .select(
+                Max(self.pe.base_paid_amount - IfNull(included_taxes_query.included_taxes, 0)).as_(
+                    "taxable_value"
+                )
+            )
             .groupby(self.pe.name)
         )
 
@@ -1014,15 +1056,24 @@ class GSTR11A11BData:
             self.get_query("Adjustment")
             .join(self.pe_ref)
             .on(self.pe_ref.name == self.gl_entry.voucher_detail_no)
-            .select(self.pe_ref.allocated_amount.as_("taxable_value"))
+            .select(Max(self.pe_ref.allocated_amount).as_("taxable_value"))
             .groupby(self.gl_entry.voucher_detail_no)
         )
 
+    def get_11B_payment_entry_fields(self, **aliases):
+        columns = {
+            "name": self.pe.name,
+            "party": self.pe.party,
+            "posting_date": self.pe.posting_date,
+            "company_gstin": self.pe.company_gstin,
+            "reference_name": self.pe_ref.reference_name,
+        }
+
+        return [Max(columns[column]).as_(alias) for column, alias in aliases.items()]
+
     def get_query(self, type_of_business):
         cr_or_dr = "credit" if type_of_business == "Advances" else "debit"
-        cr_or_dr_amount_field = getattr(
-            self.gl_entry, f"{cr_or_dr}_in_account_currency"
-        )
+        cr_or_dr_amount_field = getattr(self.gl_entry, f"{cr_or_dr}_in_account_currency")
         cess_account = get_escaped_name(self.gst_accounts.cess_account)
 
         return (
@@ -1030,7 +1081,8 @@ class GSTR11A11BData:
             .join(self.pe)
             .on(self.pe.name == self.gl_entry.voucher_no)
             .select(
-                self.pe.place_of_supply,
+                # use MAX() for joined fields to satisfy postgres GROUP BY rules
+                Max(self.pe.place_of_supply).as_("place_of_supply"),
                 Sum(
                     Case()
                     .when(
@@ -1053,9 +1105,7 @@ class GSTR11A11BData:
         )
 
     def get_conditions(self):
-        gst_accounts_list = [
-            account_head for account_head in self.gst_accounts.values() if account_head
-        ]
+        gst_accounts_list = [account_head for account_head in self.gst_accounts.values() if account_head]
 
         conditions = []
 
@@ -1064,15 +1114,11 @@ class GSTR11A11BData:
         conditions.append(self.gl_entry.company == self.filters.get("company"))
         conditions.append(self.gl_entry.account.isin(gst_accounts_list))
         conditions.append(
-            self.gl_entry.posting_date[
-                self.filters.get("from_date") : self.filters.get("to_date")
-            ]
+            self.gl_entry.posting_date[self.filters.get("from_date") : self.filters.get("to_date")]
         )
 
         if self.filters.get("company_gstin"):
-            conditions.append(
-                self.gl_entry.company_gstin == self.filters.get("company_gstin")
-            )
+            conditions.append(self.gl_entry.company_gstin == self.filters.get("company_gstin"))
 
         return conditions
 
@@ -1080,11 +1126,7 @@ class GSTR11A11BData:
         data = {}
         for entry in records:
             taxable_value = flt(entry.taxable_value, 2)
-            tax_rate = (
-                round(((entry.tax_amount / taxable_value) * 100))
-                if taxable_value
-                else 0
-            )
+            tax_rate = round((entry.tax_amount / taxable_value) * 100) if taxable_value else 0
 
             data.setdefault((entry.place_of_supply, tax_rate), [0.0, 0.0])
 

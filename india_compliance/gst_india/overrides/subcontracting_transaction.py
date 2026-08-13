@@ -1,12 +1,19 @@
-from pypika import Order
-
 import frappe
-from frappe import _, bold
-from frappe.contacts.doctype.address.address import get_address_display
-from frappe.utils import flt
 from erpnext.accounts.party import get_address_tax_category
 from erpnext.stock.get_item_details import ItemDetailsCtx, get_item_tax_template
+from frappe import _, bold
+from frappe.contacts.doctype.address.address import get_address_display, get_default_address
+from frappe.utils import flt
+from pypika import Order
 
+from india_compliance.gst_india.constants import (
+    E_WAYBILL_STOCK_ENTRY_PURPOSES,
+)
+from india_compliance.gst_india.constants.e_waybill import (
+    ADDRESS_FIELDS,
+    ADDRESS_GSTIN_FIELD_MAP,
+    buying_address,
+)
 from india_compliance.gst_india.overrides.sales_invoice import (
     update_dashboard_with_gst_logs,
 )
@@ -54,7 +61,10 @@ def after_mapping_subcontracting_order(doc, method, source_doc):
         return
 
     set_taxes(doc)
+    update_item_tax_template(doc, source_doc)
 
+
+def update_item_tax_template(doc, source_doc):
     if not doc.items:
         return
 
@@ -69,6 +79,12 @@ def after_mapping_subcontracting_order(doc, method, source_doc):
     args = ItemDetailsCtx({"company": doc.company, "tax_category": tax_category})
 
     for item in doc.items:
+        if not item.item_code:
+            continue
+
+        if item.item_tax_template:
+            continue
+
         out = frappe._dict()
         item_doc = frappe.get_cached_doc("Item", item.item_code)
         get_item_tax_template(args, item_doc, out)
@@ -80,14 +96,99 @@ def after_mapping_stock_entry(doc, method, source_doc):
         doc.taxes_and_charges = ""
         doc.taxes = []
 
-    if doc.purpose != "Material Transfer" or not doc.is_return:
+    set_item_tax_template(doc, source_doc)
+
+    # set_address_fields
+    if source_doc.doctype == "Subcontracting Inward Order":
+        set_address_for_subcontracting_inward(doc, source_doc)
+    else:
+        update_address_fields(doc, source_doc)
+
+
+def update_address_fields(doc, source_doc):
+
+    address_map = get_mapped_address(doc, source_doc)
+
+    if not address_map:
         return
 
-    doc.bill_to_address = source_doc.billing_address
-    doc.bill_from_address = source_doc.supplier_address
-    doc.bill_to_gstin = source_doc.company_gstin
-    doc.bill_from_gstin = source_doc.supplier_gstin
+    doc.bill_from_address = address_map.bill_from
+    doc.bill_from_gstin = address_map.bill_from_gstin
+    doc.bill_to_address = address_map.bill_to
+    doc.bill_to_gstin = address_map.bill_to_gstin
+    doc.ship_from_address = address_map.ship_from
+    doc.ship_to_address = address_map.ship_to
+
     set_address_display(doc)
+
+
+def set_address_for_subcontracting_inward(doc, source_doc):
+    """Set company (bill_from) -> customer (bill_to) addresses for Subcontracting Inward Stock Entries."""
+    if not doc.bill_from_address:
+        doc.bill_from_address = get_default_address("Company", source_doc.company)
+
+    if not doc.bill_to_address:
+        doc.bill_to_address = get_default_address("Customer", source_doc.customer)
+
+    set_address_display(doc)
+
+
+def get_mapped_address(doc, source_doc):
+    """
+    Return bill_from, bill_from_gstin, bill_to, bill_to_gstin, ship_from, ship_to
+    resolved from source_doc using ADDRESS_FIELDS (plus SCO mapping).
+
+    reverse - swap bill_from <> bill_to and ship_from <> ship_to.
+    """
+    address_map = frappe._dict(
+        {
+            "Subcontracting Order": buying_address,
+            **ADDRESS_FIELDS,
+        }
+    )
+
+    fields = address_map.get(source_doc.doctype, {})
+
+    if not fields:
+        return
+
+    bill_from = source_doc.get(fields.get("bill_from"))
+    bill_to = source_doc.get(fields.get("bill_to"))
+    ship_from = source_doc.get(fields.get("ship_from"))
+    ship_to = source_doc.get(fields.get("ship_to"))
+    bill_from_gstin = source_doc.get(ADDRESS_GSTIN_FIELD_MAP.get(fields.get("bill_from")))
+    bill_to_gstin = source_doc.get(ADDRESS_GSTIN_FIELD_MAP.get(fields.get("bill_to")))
+
+    reverse = (
+        source_doc.doctype in ("Subcontracting Order", "Purchase Receipt")
+        and doc.purpose in ("Material Transfer", "Send to Subcontractor")
+        and doc.is_return == 0
+    )
+
+    if reverse:
+        bill_from, bill_to, bill_from_gstin, bill_to_gstin = (
+            bill_to,
+            bill_from,
+            bill_to_gstin,
+            bill_from_gstin,
+        )
+        ship_from, ship_to = ship_to, ship_from
+
+    return frappe._dict(
+        bill_from=bill_from,
+        bill_from_gstin=bill_from_gstin,
+        bill_to=bill_to,
+        bill_to_gstin=bill_to_gstin,
+        ship_from=ship_from,
+        ship_to=ship_to,
+    )
+
+
+def set_item_tax_template(doc, source_doc):
+    if source_doc.doctype not in ("Subcontracting Order", "Purchase Order"):
+        return
+
+    update_item_tax_template(doc, source_doc)
 
 
 def before_mapping_subcontracting_receipt(doc, method, source_doc, table_maps):
@@ -141,11 +242,7 @@ def set_taxes(doc):
 
 # Common Functions for Suncontracting Transactions
 def get_dashboard_data(data):
-    doctype = (
-        "Subcontracting Receipt"
-        if data.fieldname == "subcontracting_receipt"
-        else "Stock Entry"
-    )
+    doctype = "Subcontracting Receipt" if data.fieldname == "subcontracting_receipt" else "Stock Entry"
     return update_dashboard_with_gst_logs(
         doctype,
         data,
@@ -179,9 +276,7 @@ def onload(doc, method=None):
 
 def validate(doc, method=None):
     field_map = (
-        STOCK_ENTRY_FIELD_MAP
-        if doc.doctype == "Stock Entry"
-        else SUBCONTRACTING_ORDER_RECEIPT_FIELD_MAP
+        STOCK_ENTRY_FIELD_MAP if doc.doctype == "Stock Entry" else SUBCONTRACTING_ORDER_RECEIPT_FIELD_MAP
     )
     CustomTaxController(doc, field_map).set_taxes_and_totals()
 
@@ -223,14 +318,10 @@ def validate_doc_references(doc, method=None):
         return
 
     is_return_material_transfer = (
-        doc.doctype == "Stock Entry"
-        and doc.purpose == "Material Transfer"
-        and doc.is_return
+        doc.doctype == "Stock Entry" and doc.purpose == "Material Transfer" and doc.is_return
     )
 
-    is_subcontracting_receipt = (
-        doc.doctype == "Subcontracting Receipt" and not doc.is_return
-    )
+    is_subcontracting_receipt = doc.doctype == "Subcontracting Receipt" and not doc.is_return
 
     if not (is_return_material_transfer or is_subcontracting_receipt):
         return
@@ -298,10 +389,7 @@ def validate_transaction(doc, method=None):
     if validate_company_address_field(doc, company_address_field) is False:
         return False
 
-    if (
-        validate_mandatory_fields(doc, (company_gstin_field, "place_of_supply"))
-        is False
-    ):
+    if validate_mandatory_fields(doc, (company_gstin_field, "place_of_supply")) is False:
         return False
 
     if getattr(doc, company_address_field) and (
@@ -334,9 +422,9 @@ def validate_company_address_field(doc, company_address_field):
         validate_mandatory_fields(
             doc,
             company_address_field,
-            _(
-                "Please set {0} to ensure Company GSTIN is fetched in the transaction."
-            ).format(bold(doc.meta.get_label(company_address_field))),
+            _("Please set {0} to ensure Company GSTIN is fetched in the transaction.").format(
+                bold(doc.meta.get_label(company_address_field))
+            ),
         )
         is False
     ):
@@ -374,10 +462,9 @@ class SubcontractingGSTAccounts(GSTAccounts):
             return
 
         self._throw(
-            _(
-                "Cannot charge GST in Row #{0} since Bill From GSTIN and Bill To GSTIN are"
-                " same"
-            ).format(self.first_gst_idx)
+            _("Cannot charge GST in Row #{0} since Bill From GSTIN and Bill To GSTIN are same").format(
+                self.first_gst_idx
+            )
         )
 
     def validate_for_charge_type(self):
@@ -413,9 +500,7 @@ def get_relevant_references(filters: str | dict | frappe._dict | None = None):
         start=None,
         page_len=None,
     )
-    stock_entries = get_stock_entry_references(
-        filters=filters, only_linked_references=True
-    )
+    stock_entries = get_stock_entry_references(filters=filters, only_linked_references=True)
 
     return {
         "Subcontracting Receipt": [row[0] for row in receipt_returns],
@@ -526,20 +611,16 @@ def is_e_waybill_applicable(doc):
     gst_settings = frappe.get_cached_doc("GST Settings")
 
     if not (
-        gst_settings.enable_api
-        and gst_settings.enable_e_waybill
-        and gst_settings.enable_e_waybill_for_sc
+        gst_settings.enable_api and gst_settings.enable_e_waybill and gst_settings.enable_e_waybill_for_sc
     ):
         return False
 
     if doc.doctype != "Stock Entry":
         return True
 
-    if doc.purpose not in [
-        "Material Transfer",
-        "Material Issue",
-        "Send to Subcontractor",
-    ]:
+    # Inward purposes (Delivery, RM Return) carry only an e-Waybill; the
+    # principal reports them in ITC-04 / GSTR-1, not the company (job worker).
+    if doc.purpose not in E_WAYBILL_STOCK_ENTRY_PURPOSES:
         return False
 
     return True
@@ -558,3 +639,109 @@ def ignore_gst_validations_for_subcontracting(doc):
 
     if doc.is_return and not doc.bill_to_address:
         return True
+
+
+def set_subcontracting_inward_taxable_value(doc):
+    """Add the value of customer-provided materials to the e-Waybill taxable value
+    of Subcontracting Inward Stock Entries."""
+    if doc.purpose == "Subcontracting Delivery":
+        _set_subcontracting_delivery_additional_value(doc)
+    elif doc.purpose == "Return Raw Material to Customer":
+        _set_return_raw_material_additional_value(doc)
+
+
+def _set_subcontracting_delivery_additional_value(doc):
+    """Add the value of consumed customer materials to the delivered finished goods.
+
+    additional = SUM(order_rate * consumed_qty) / produced_qty * delivered transfer_qty.
+    Quantities are all in stock UOM (consumed_qty, produced_qty, transfer_qty), so
+    the value is consistent with the row amount. Left at 0 for secondary items,
+    no consumption, or no production yet.
+    """
+    scio_details = {item.scio_detail for item in doc.items if item.get("scio_detail")}
+    if not scio_details:
+        return
+
+    # Customer-provided received items for the finished goods being delivered.
+    received_items = frappe.get_all(
+        "Subcontracting Inward Order Received Item",
+        filters={"reference_name": ("in", list(scio_details)), "is_customer_provided_item": 1},
+        fields=["reference_name", "rate", "consumed_qty"],
+    )
+    if not received_items:
+        return
+
+    produced_qty = frappe._dict(
+        frappe.get_all(
+            "Subcontracting Inward Order Item",
+            filters={"name": ("in", list(scio_details))},
+            fields=["name", "produced_qty"],
+            as_list=True,
+        )
+    )
+
+    # Total consumed customer-material value per finished good, using the order rate.
+    fg_material_cost = {}
+    for row in received_items:
+        cost = flt(row.rate) * flt(row.consumed_qty)
+        fg_material_cost[row.reference_name] = fg_material_cost.get(row.reference_name, 0) + cost
+
+    precision = doc.precision("additional_taxable_value", "items")
+    rows_without_produced_qty = []
+
+    for item in doc.items:
+        scio_detail = item.get("scio_detail")
+        material_cost = fg_material_cost.get(scio_detail)
+        if not material_cost:
+            continue
+
+        if not produced_qty.get(scio_detail):
+            rows_without_produced_qty.append(item.idx)
+            continue
+
+        item.additional_taxable_value = flt(
+            material_cost / flt(produced_qty.get(scio_detail)) * flt(item.transfer_qty), precision
+        )
+
+    if rows_without_produced_qty:
+        frappe.msgprint(
+            _(
+                "Row #{0}: Value of customer-provided materials could not be added to the"
+                " taxable value as no production has been reported yet"
+            ).format(", ".join(str(idx) for idx in rows_without_produced_qty)),
+            alert=True,
+            indicator="yellow",
+        )
+
+
+def _set_return_raw_material_additional_value(doc):
+    """Set the returned RM taxable value to the customer's declared value (Rule 55).
+
+    additional = rate * qty - amount, and may be negative to correct the SE
+    amount. A return moves on-hand material, so the SCIO Received Item rate is used;
+    self-procured items (no rate) are skipped.
+    """
+    scio_details = {item.scio_detail for item in doc.items if item.get("scio_detail")}
+    if not scio_details:
+        return
+
+    rates = frappe._dict(
+        frappe.get_all(
+            "Subcontracting Inward Order Received Item",
+            filters={"name": ("in", list(scio_details)), "is_customer_provided_item": 1},
+            fields=["name", "rate"],
+            as_list=True,
+        )
+    )
+    if not rates:
+        return
+
+    precision = doc.precision("additional_taxable_value", "items")
+
+    for item in doc.items:
+        scio_detail = item.get("scio_detail")
+        if scio_detail not in rates:
+            continue
+
+        declared_value = flt(rates[scio_detail]) * flt(item.transfer_qty)
+        item.additional_taxable_value = flt(declared_value - flt(item.amount), precision)

@@ -6,7 +6,11 @@ import frappe
 from frappe.tests import IntegrationTestCase, change_settings
 from frappe.utils.data import getdate
 
-IGNORE_TEST_RECORD_DEPENDENCIES = ["Company", "Account"]
+from india_compliance.gst_india.doctype.gst_settings.gst_settings import (
+    RETRY_E_INVOICE_E_WAYBILL_JOB,
+)
+
+IGNORE_TEST_RECORD_DEPENDENCIES = ["Company", "Account", "UOM"]
 
 
 class TestGSTSettings(IntegrationTestCase):
@@ -18,6 +22,16 @@ class TestGSTSettings(IntegrationTestCase):
     def test_api_key_enabled(self):
         doc = frappe.get_doc("GST Settings")
         doc.save()
+
+    def test_retry_scheduled_job_follows_setting(self):
+        job = frappe.db.get_value("Scheduled Job Type", {"method": RETRY_E_INVOICE_E_WAYBILL_JOB})
+        self.assertTrue(job, f"Scheduled Job Type is missing for {RETRY_E_INVOICE_E_WAYBILL_JOB}")
+
+        with change_settings("GST Settings", {"enable_retry_einv_ewb_generation": 0}):
+            with change_settings("GST Settings", {"enable_retry_einv_ewb_generation": 1}):
+                self.assertEqual(frappe.db.get_value("Scheduled Job Type", job, "stopped"), 0)
+
+            self.assertEqual(frappe.db.get_value("Scheduled Job Type", job, "stopped"), 1)
 
     def test_validate_duplicate_account(self):
         doc = frappe.get_doc("GST Settings")
@@ -48,9 +62,7 @@ class TestGSTSettings(IntegrationTestCase):
                 row.account_type = "Output"
                 self.assertRaisesRegex(
                     frappe.ValidationError,
-                    re.compile(
-                        r"^(Row #\d+: Account Type .* appears multiple times for .*)"
-                    ),
+                    re.compile(r"^(Row #\d+: Account Type .* appears multiple times for .*)"),
                     doc.save,
                 )
                 break
@@ -104,10 +116,7 @@ class TestGSTSettings(IntegrationTestCase):
         )
         self.assertRaisesRegex(
             frappe.MandatoryError,
-            re.compile(
-                r"^(Row #\d+: Password is required when setting a GST Credential"
-                " for.*)"
-            ),
+            re.compile(r"^(Row #\d+: Password is required when setting a GST Credential" " for.*)"),
             doc.save,
         )
 
@@ -136,16 +145,32 @@ class TestGSTSettings(IntegrationTestCase):
         )
         doc.save()
 
+    @change_settings(
+        "GST Settings",
+        {"enable_api": 1, "enable_e_waybill": 1, "sandbox_mode": 0},
+    )
+    def test_no_credentials_warning_on_unrelated_update(self):
+        frappe.clear_messages()
+
+        doc = frappe.get_doc("GST Settings")
+        doc.archive_party_info_days = 10 if doc.archive_party_info_days != 10 else 7
+        doc.save()
+
+        for message in frappe.message_log:
+            message_text = (
+                message.get("message")
+                if isinstance(message, dict)
+                else frappe.parse_json(message).get("message")
+            )
+            self.assertNotIn("Please set credentials for e-Waybill / e-Invoice", message_text)
+
     def test_validate_enable_api(self):
         doc = frappe.get_doc("GST Settings")
         doc.enable_api = 1
         frappe.conf.ic_api_secret = None
         self.assertRaisesRegex(
             frappe.ValidationError,
-            re.compile(
-                r"^(Please counfigure your India Compliance Account to"
-                " enable API features)"
-            ),
+            re.compile(r"^(Please counfigure your India Compliance Account to" " enable API features)"),
             doc.validate_enable_api,
         )
 
@@ -169,9 +194,7 @@ class TestGSTSettings(IntegrationTestCase):
         doc.e_invoice_applicable_companies = []
         self.assertRaisesRegex(
             frappe.ValidationError,
-            re.compile(
-                r"^(You must select at least one company to which e-Invoice is Applicable)"
-            ),
+            re.compile(r"^(You must select at least one company to which e-Invoice is Applicable)"),
             doc.validate_e_invoice_applicable_companies,
         )
 

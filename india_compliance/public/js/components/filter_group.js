@@ -20,30 +20,28 @@ india_compliance.FILTER_OPERATORS = {
     },
 };
 
-FILTER_GROUP_BUTTON = $(
+const FILTER_GROUP_BUTTON = $(
     `
     <div class="custom-button-group">
         <div class="filter-selector">
             <div class="btn-group">
                 <button class="btn btn-default btn-sm filter-button">
-                    <span class="filter-icon">
-                        ${frappe.utils.icon("filter")}
+                    <span class="filter-icon button-icon">
+                        ${frappe.utils.icon("funnel")}
                     </span>
                     <span class="button-label hidden-xs">
                         ${__("Filter")}
-                    <span>
+                    </span>
                 </button>
-                <button class="btn btn-default btn-sm filter-x-button" title="${__(
-                    "Clear all filters"
-                )}">
-                    <span class="filter-icon">
-                        ${frappe.utils.icon("filter-x")}
+                <button class="btn btn-default btn-sm filter-x-button" title="${__("Clear all filters")}">
+                    <span class="filter-icon button-icon">
+                        ${frappe.utils.icon("x")}
                     </span>
                 </button>
             </div>
         </div>
     </div>
-    `
+    `,
 );
 
 class _Filter extends frappe.ui.Filter {
@@ -51,22 +49,26 @@ class _Filter extends frappe.ui.Filter {
         let filter_options = this.filter_list.filter_options;
         if (filter_options) {
             filter_options = { ...filter_options };
-            if (this.fieldname && this.fieldname !== "name")
-                delete filter_options.fieldname;
+            if (this.fieldname && this.fieldname !== "name") delete filter_options.fieldname;
 
             Object.assign(this, filter_options);
         }
 
         this.conditions = this.conditions.filter(
-            condition => india_compliance.FILTER_OPERATORS[condition && condition[0]]
+            (condition) => india_compliance.FILTER_OPERATORS[condition && condition[0]],
         );
+
+        // keep like / not like conditions
+        for (const [fieldtype, invalid] of Object.entries(this.invalid_condition_map))
+            this.invalid_condition_map[fieldtype] = invalid.filter(
+                (condition) => !this.like_conditions.includes(condition),
+            );
     }
 }
 
 india_compliance.FilterGroup = class FilterGroup extends frappe.ui.FilterGroup {
     constructor(opts) {
-        if (!opts.parent)
-            frappe.throw(__("india_compliance.FilterGroup: Parent element not found"));
+        if (!opts.parent) frappe.throw(__("india_compliance.FilterGroup: Parent element not found"));
 
         FILTER_GROUP_BUTTON.appendTo(opts.parent);
 
@@ -100,15 +102,12 @@ india_compliance.FilterGroup = class FilterGroup extends frappe.ui.FilterGroup {
 
     remove_filter(filter_value) {
         // filter_value of form: [doctype, fieldname, condition, value]
-        this.filters = this.filters.filter(f => {
+        this.filters = this.filters.filter((f) => {
             let f_value = f.get_value();
 
             if (filter_value.length === 2) f_value = f_value.slice(0, 2);
 
-            const remove = frappe.utils.arrays_equal(
-                f_value.slice(0, 4),
-                filter_value.slice(0, 4)
-            );
+            const remove = frappe.utils.arrays_equal(f_value.slice(0, 4), filter_value.slice(0, 4));
             if (remove) f.remove();
 
             return !remove;
@@ -126,13 +125,16 @@ india_compliance.FilterGroup = class FilterGroup extends frappe.ui.FilterGroup {
 };
 
 function _like(expected_value, value) {
-    expected_value = expected_value.toLowerCase();
-    value = value.toLowerCase();
+    expected_value = String(expected_value).toLowerCase();
+    value = String(value).toLowerCase();
 
-    if (!expected_value.endsWith("%")) return value.endsWith(expected_value.slice(1));
+    const starts_open = expected_value.startsWith("%");
+    const ends_open = expected_value.endsWith("%");
+    const text = expected_value.replace(/^%/, "").replace(/%$/, "");
 
-    if (!expected_value.startsWith("%"))
-        return value.startsWith(expected_value.slice(0, -1));
+    if (starts_open && !ends_open) return value.endsWith(text);
+    if (ends_open && !starts_open) return value.startsWith(text);
 
-    return value.includes(expected_value.slice(1, -1));
+    // no wildcard typed, match anywhere
+    return value.includes(text);
 }

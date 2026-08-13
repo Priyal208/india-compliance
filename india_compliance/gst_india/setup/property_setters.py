@@ -75,6 +75,8 @@ def get_property_setters(*, include_defaults=False):
         },
         *PURCHASE_RECEIPT_PROPERTIES,
         *SUBCONTRACTING_RECEIPT_PROPERTIES,
+        *ADDRESS_ALLOW_ON_SUBMIT_PROPERTIES,
+        *get_transporter_properties(),
     ]
 
     if include_defaults:
@@ -101,6 +103,25 @@ def get_options_property_setter(doctype, fieldname, new_options, prepend=True):
         "value": options,
     }
 
+
+# Transporter details stay editable after submit until an e-Waybill is generated
+ALLOW_ON_SUBMIT_PROPERTY = {
+    "property": "allow_on_submit",
+    "property_type": "Check",
+    "value": "1",
+}
+
+EWAYBILL_READ_ONLY_PROPERTY = {
+    "property": "read_only_depends_on",
+    "property_type": "Code",
+    "value": "eval: doc.ewaybill",
+}
+
+FETCH_IF_EMPTY_PROPERTY = {
+    "property": "fetch_if_empty",
+    "property_type": "Check",
+    "value": "1",
+}
 
 TRANSPORTER_NAME_PROPERTIES = [
     {
@@ -199,6 +220,83 @@ SUBCONTRACTING_RECEIPT_PROPERTIES = [
     for field in TRANSPORTER_NAME_PROPERTIES + LR_NO_PROPERTIES + LR_DATE_PROPERTIES
 ]
 
+SALES_ADDRESS_FIELDS = (
+    "customer_address",
+    "address_display",
+    "shipping_address_name",
+    "shipping_address",
+    "billing_address_gstin",
+    "gst_category",
+    "place_of_supply",
+)
+
+PURCHASE_ADDRESS_FIELDS = (
+    "supplier_address",
+    "address_display",
+    "shipping_address",
+    "shipping_address_display",
+    "supplier_gstin",
+    "gst_category",
+    "place_of_supply",
+)
+
+ADDRESS_FIELDS_BY_DOCTYPE = {
+    **dict.fromkeys(
+        ("Quotation", "Sales Order", "Delivery Note", "Sales Invoice"),
+        SALES_ADDRESS_FIELDS,
+    ),
+    **dict.fromkeys(
+        ("Supplier Quotation", "Purchase Order", "Purchase Receipt", "Purchase Invoice"),
+        PURCHASE_ADDRESS_FIELDS,
+    ),
+}
+
+ADDRESS_ALLOW_ON_SUBMIT_PROPERTIES = [
+    {
+        "doctype": doctype,
+        "fieldname": fieldname,
+        "property": "allow_on_submit",
+        "property_type": "Check",
+        "value": "1",
+    }
+    for doctype, fieldnames in ADDRESS_FIELDS_BY_DOCTYPE.items()
+    for fieldname in fieldnames
+]
+
+
+ERPNEXT_TRANSPORTER_FIELDS = {
+    "Delivery Note": (
+        "transporter",
+        "transporter_name",
+        "driver",
+        "driver_name",
+        "lr_no",
+        "lr_date",
+        "vehicle_no",
+    ),
+    "Purchase Receipt": ("transporter_name", "lr_no", "lr_date"),
+    "Subcontracting Receipt": ("transporter_name", "lr_no", "lr_date"),
+}
+
+# fetched from transporter / driver needs fetch if empty.
+ERPNEXT_FETCHED_TRANSPORTER_FIELDS = ("transporter_name", "driver_name")
+
+
+def get_transporter_properties():
+    properties = []
+
+    for doctype, fieldnames in ERPNEXT_TRANSPORTER_FIELDS.items():
+        for fieldname in fieldnames:
+            field = {"doctype": doctype, "fieldname": fieldname}
+
+            properties.append({**field, **ALLOW_ON_SUBMIT_PROPERTY})
+            properties.append({**field, **EWAYBILL_READ_ONLY_PROPERTY})
+
+            if fieldname in ERPNEXT_FETCHED_TRANSPORTER_FIELDS:
+                properties.append({**field, **FETCH_IF_EMPTY_PROPERTY})
+
+    return properties
+
 
 # Customizable property setters that are set by default
 DEFAULT_PROPERTIES = [
@@ -215,6 +313,13 @@ DEFAULT_PROPERTIES = [
         "doctype_or_field": "DocType",
         "property": "default_email_template",
         "value": "Purchase Reconciliation",
+    },
+    {
+        "doctype": "GSTR 3B Report",
+        "doctype_or_field": "DocType",
+        "property": "default_print_format",
+        "value": "GSTR-3B",
+        "is_system_generated": 0,
     },
     # OPTIONS #
     get_options_property_setter(
