@@ -82,10 +82,10 @@ function fiscal_year_start(date) {
 }
 
 async function apply_period_bounds(frm) {
-    if (frm.doc.gst_return) {
-        const { message } = await frm.call("get_period_bounds", {
-            return_type: frm.doc.gst_return,
-        });
+    const return_type = frm.doc.gst_return;
+    if (return_type) {
+        const { message } = await frm.call("get_period_bounds", { return_type });
+        if (frm.doc.gst_return !== return_type) return;
         frm._bounds = message;
     }
 

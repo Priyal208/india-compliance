@@ -336,10 +336,10 @@ class TestGSTReturnExportController(IntegrationTestCase):
 
     def test_sync_only_accepts_months_the_portal_can_serve(self):
         """Client months land in log names; junk and months past the cut-off are dropped."""
-        cut_off = "india_compliance.gst_india.doctype.purchase_reconciliation_tool.BaseUtil._getdate"
+        today = "india_compliance.gst_india.doctype.purchase_reconciliation_tool.getdate"
         with (
             patch.object(controller, "is_job_enqueued", return_value=False),
-            patch(cut_off, return_value=getdate("2021-05-20")),
+            patch(today, return_value=getdate("2021-05-20")),
         ):
             result = self.doc.sync_return_data(
                 GSTIN, "GSTR-2B", ["../etc", "132021", "", "072021"], "2021-03-01", "2021-08-01"
@@ -353,19 +353,19 @@ class TestGSTReturnExportController(IntegrationTestCase):
         self.assertIn("already in progress", result["message"])
 
     def test_sync_status_stops_at_the_portal_cut_off(self):
-        """2B exists only from the 14th of the next month; the picker stops at the cut-off."""
-        cut_off = "india_compliance.gst_india.doctype.purchase_reconciliation_tool.BaseUtil._getdate"
-        with patch(cut_off, return_value=getdate("2021-05-20")):
+        """2B for a month exists from the 14th of the next; on 20 May, April is the newest."""
+        today = "india_compliance.gst_india.doctype.purchase_reconciliation_tool.getdate"
+        with patch(today, return_value=getdate("2021-05-20")):
             status = self.doc.get_sync_status(GSTIN, "GSTR-2B", "2021-03-01", "2021-08-01")
             with self.assertRaises(frappe.ValidationError):
-                self.doc.get_sync_status(GSTIN, "GSTR-2B", "2021-06-01", "2021-08-01")
+                self.doc.get_sync_status(GSTIN, "GSTR-2B", "2021-05-01", "2021-08-01")
 
-        self.assertEqual([p["period"] for p in status["periods"]], ["032021", "042021", "052021"])
+        self.assertEqual([p["period"] for p in status["periods"]], ["032021", "042021"])
 
     def test_range_starts_where_the_return_does(self):
         """2A exists from July 2017, 2B from July 2020; earlier months are never offered."""
-        cut_off = "india_compliance.gst_india.doctype.purchase_reconciliation_tool.BaseUtil._getdate"
-        with patch(cut_off, return_value=getdate("2020-12-01")):
+        today = "india_compliance.gst_india.doctype.purchase_reconciliation_tool.getdate"
+        with patch(today, return_value=getdate("2020-12-01")):
             status_2b = self.doc.get_sync_status(GSTIN, "GSTR-2B", "2019-01-01", "2020-09-30")
         status_2a = self.doc.get_sync_status(GSTIN, "GSTR-2A", "2017-01-01", "2017-08-31")
 
