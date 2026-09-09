@@ -176,21 +176,6 @@ class GSTReturnLog(GenerateGSTR1, FileGSTR1, Document):
                 return row
 
 
-@frappe.whitelist()
-def download_file():
-    data = frappe._dict(frappe.local.form_dict)
-
-    frappe.has_permission(DOCTYPE, "read", doc=data["name"], throw=True)
-
-    file = get_file_doc(DOCTYPE, data["name"], data["file_field"])
-    if not file:
-        frappe.throw(frappe._("File not found"), frappe.DoesNotExistError)
-
-    frappe.response["filename"] = data["file_name"]
-    frappe.response["filecontent"] = file.get_content(encodings=[])
-    frappe.response["type"] = "download"
-
-
 def process_gstr_returns_info(company, gstin, e_filed_list):
     process_gstr_1_returns_info(company, gstin, e_filed_list)
     process_gstr_3b_returns_info(company, gstin, e_filed_list)
