@@ -12,6 +12,7 @@ from zipfile import ZipFile
 import frappe
 import openpyxl
 from frappe import parse_json, read_file
+from frappe.core.doctype.file.utils import delete_file
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, now_datetime
 
@@ -139,6 +140,18 @@ def _mock_names(raw):
             )
         )
         yield stack
+
+
+def _remove_file_later(test, file):
+    """Rollback drops the row, not the disk copy."""
+
+    def remove():
+        if frappe.db.exists("File", file.name):
+            frappe.delete_doc("File", file.name, ignore_permissions=True, delete_permanently=True)
+        else:
+            delete_file(file.file_url)
+
+    test.addCleanup(remove)
 
 
 def _build_periods(exporter_cls, gstin, periods, raw, supplier_names=None):
@@ -805,16 +818,10 @@ class TestExportFileLifecycle(IntegrationTestCase):
                 **overrides,
             }
         ).insert(ignore_permissions=True)
+        _remove_file_later(self, file)
 
         if creation:
             frappe.db.set_value("File", file.name, "creation", creation, update_modified=False)
-
-        self.addCleanup(
-            lambda: (
-                frappe.db.exists("File", file.name)
-                and frappe.delete_doc("File", file.name, ignore_permissions=True, delete_permanently=True)
-            )
-        )
         return file.name
 
     def test_download_streams_the_file(self):
@@ -908,12 +915,7 @@ class TestExportFileLifecycle(IntegrationTestCase):
                 "attached_to_name": f"GSTR2b-{period}-{GSTIN_2B}",
             },
         )
-        self.addCleanup(
-            lambda: (
-                frappe.db.exists("File", file.name)
-                and frappe.delete_doc("File", file.name, ignore_permissions=True, delete_permanently=True)
-            )
-        )
+        _remove_file_later(self, file)
         return file
 
     def test_built_export_hangs_off_the_log(self):
@@ -967,13 +969,12 @@ class TestExportReuse(IntegrationTestCase):
                 "content": b"built-export",
             }
         ).insert(ignore_permissions=True)
+        _remove_file_later(self, file)
         self.assertEqual(get_reusable_export(*args), file.file_url)
 
         # resync bumps the log; the built file is now older than the data
         store_raw_return_data(GSTIN_2B, ReturnType.GSTR2B.value, self.PERIODS[0], self.raw)
         self.assertIsNone(get_reusable_export(*args))
-
-        frappe.delete_doc("File", file.name, ignore_permissions=True, delete_permanently=True)
 
     def test_grouping_variants_do_not_share_a_zip(self):
         periods = ["042024", "052024", "062024", "072024"]
