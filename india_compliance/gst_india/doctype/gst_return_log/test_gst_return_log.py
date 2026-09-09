@@ -2,6 +2,8 @@
 # See license.txt
 
 import copy
+import gzip
+import json
 from unittest.mock import Mock, patch
 
 import frappe
@@ -12,7 +14,9 @@ from india_compliance.gst_india.doctype.gst_return_log.generate_gstr_1 import (
     ReconcileGSTR1,
 )
 from india_compliance.gst_india.doctype.gst_return_log.gst_return_log import (
+    RAW_FIELD,
     add_comment_to_gst_return_log,
+    download_file,
     get_gst_return_log,
     get_raw_return_data,
     store_raw_return_data,
@@ -127,6 +131,48 @@ class TestGSTReturnLog(IntegrationTestCase):
         stored = get_raw_return_data(self.GSTIN, "GSTR1", period)
         self.assertEqual(stored["chksum"], "abc123")
         self.assertNotIn("b2b", stored)
+
+    def _call_download_file(self, **form_dict):
+        original = frappe.local.form_dict
+        frappe.local.form_dict = frappe._dict(form_dict)
+        self.addCleanup(setattr, frappe.local, "form_dict", original)
+        self.addCleanup(setattr, frappe.local, "response", frappe._dict())
+        download_file()
+
+    def test_download_file_serves_log_attachments(self):
+        period = "062099"
+        store_raw_return_data(self.GSTIN, "GSTR2b", period, {"chksum": "abc123"})
+
+        self._call_download_file(
+            name=f"GSTR2b-{period}-{self.GSTIN}",
+            file_field=RAW_FIELD,
+            file_name="raw.json.gz",
+        )
+
+        stored = json.loads(gzip.decompress(frappe.response["filecontent"]))
+        self.assertEqual(stored["chksum"], "abc123")
+
+    def test_download_file_never_serves_other_doctypes(self):
+        """Files hang off many doctypes. This endpoint must only serve return logs."""
+        todo = frappe.get_doc(doctype="ToDo", description="secret").insert()
+        frappe.get_doc(
+            doctype="File",
+            file_name="secret.txt",
+            content="secret",
+            attached_to_doctype="ToDo",
+            attached_to_name=todo.name,
+            attached_to_field="description",
+            is_private=1,
+        ).insert()
+
+        self.assertRaises(
+            frappe.DoesNotExistError,
+            self._call_download_file,
+            doctype="ToDo",
+            name=todo.name,
+            file_field="description",
+            file_name="secret.txt",
+        )
 
     def test_reconcile_compares_amounts_the_portal_sent_as_null(self):
         """An amount can be None or missing. Books value must still show as a mismatch."""

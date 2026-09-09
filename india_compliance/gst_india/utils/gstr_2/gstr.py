@@ -60,11 +60,11 @@ class GSTR:
         self.setup()
 
     def setup(self):
-        self.existing_transaction = self.get_existing_transaction()
         self.download_details = self.get_download_details()
 
     def create_transactions(self, suppliers, rejected_data):
         self.rejected_data = rejected_data or []
+        self.existing_transaction = self.get_existing_transaction()
 
         if not suppliers:
             self.handle_missing_transactions()

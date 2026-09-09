@@ -178,14 +178,16 @@ class GSTReturnLog(GenerateGSTR1, FileGSTR1, Document):
 
 @frappe.whitelist()
 def download_file():
-    frappe.has_permission("GST Return Log", "read", throw=True)
-
     data = frappe._dict(frappe.local.form_dict)
+
+    frappe.has_permission(DOCTYPE, "read", doc=data["name"], throw=True)
+
+    file = get_file_doc(DOCTYPE, data["name"], data["file_field"])
+    if not file:
+        frappe.throw(frappe._("File not found"), frappe.DoesNotExistError)
+
     frappe.response["filename"] = data["file_name"]
-
-    file = get_file_doc(data["doctype"], data["name"], data["file_field"])
     frappe.response["filecontent"] = file.get_content(encodings=[])
-
     frappe.response["type"] = "download"
 
 
@@ -332,7 +334,9 @@ def store_raw_return_data(gstin, return_type, return_period, json_data, overwrit
     """Keep the portal payload (gzipped) in the period's log `raw_gov_data` field."""
     name = f"{return_type}-{return_period}-{gstin}"
     with filelock(frappe.scrub(f"raw_return_{name}")):
-        get_gst_return_log(name).update_json_for(RAW_FIELD, json_data, overwrite=overwrite)
+        log = get_gst_return_log(name)
+        log.update_json_for(RAW_FIELD, json_data, overwrite=overwrite)
+        log.db_set("section_summary", None)
 
 
 def get_raw_return_data(gstin, return_type, return_period):
