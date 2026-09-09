@@ -64,7 +64,7 @@ class GSTReturnExport(Document):
         periods = frappe.parse_json(periods) if isinstance(periods, str) else periods
 
         # only months the portal can serve
-        servable = set(_portal_periods(return_type, from_date, to_date))
+        servable = set(_periods(return_type, from_date, to_date))
         periods = [period for period in periods if period in servable]
 
         job_id = f"gst_return_sync:{company_gstin}:{return_type}"
@@ -109,7 +109,7 @@ class GSTReturnExport(Document):
         frappe.has_permission(DOCTYPE, "export", throw=True)
         return_type = normalize_return_type(return_type)
 
-        periods = get_periods_between_dates(from_date, to_date)
+        periods = _periods(return_type, from_date, to_date)
         return get_adapter(return_type, company_gstin).get_range_summary(periods)
 
     @frappe.whitelist()
@@ -119,23 +119,27 @@ class GSTReturnExport(Document):
         frappe.has_permission(DOCTYPE, "export", throw=True)
         return_type = normalize_return_type(return_type)
 
-        periods = _portal_periods(return_type, from_date, to_date)
+        periods = _periods(return_type, from_date, to_date)
         return get_adapter(return_type, company_gstin).get_sync_status(periods)
 
     @frappe.whitelist()
-    def get_latest_month(self, return_type: str):
-        """Newest month the portal can serve."""
+    def get_period_bounds(self, return_type: str):
+        """First and newest month the portal can serve; the pickers stay inside."""
         frappe.has_permission(DOCTYPE, "export", throw=True)
-        return get_first_day(BaseUtil._getdate(ReturnType(normalize_return_type(return_type))))
+        return_type = normalize_return_type(return_type)
+        return {
+            "first": get_exporter(return_type).adapter.first_month,
+            "latest": get_first_day(BaseUtil._getdate(ReturnType(return_type))),
+        }
 
 
-def _portal_periods(return_type, from_date, to_date):
-    """Months of the range the portal can serve."""
-    cut_off = BaseUtil._getdate(ReturnType(return_type))
-    if getdate(from_date) > cut_off:
-        return []
-
-    return get_periods_between_dates(from_date, min(getdate(to_date), cut_off))
+def _periods(return_type, from_date, to_date):
+    """Months the portal can serve for the range: the return's first month to its cut-off."""
+    start = max(getdate(from_date), getdate(get_exporter(return_type).adapter.first_month))
+    end = min(getdate(to_date), BaseUtil._getdate(ReturnType(return_type)))
+    if start > end:
+        frappe.throw(_("No {0} months in the selected range.").format(return_label(return_type)))
+    return get_periods_between_dates(start, end)
 
 
 def _sync_return_data(company_gstin, return_type, periods):
@@ -265,7 +269,7 @@ def generate_export_file(company_gstin, return_type, from_date, to_date, user, g
         "group_by": group_by,
     }
     try:
-        periods = get_periods_between_dates(from_date, to_date)
+        periods = _periods(return_type, from_date, to_date)
         file_name = export_file_name(company_gstin, return_type, periods, group_by)
 
         # another job may have built it while this one queued
@@ -311,7 +315,7 @@ def download_export_file(
     return_type = normalize_return_type(return_type)
     group_by = validated_group_by(group_by)
 
-    periods = get_periods_between_dates(from_date, to_date)
+    periods = _periods(return_type, from_date, to_date)
     file_name = export_file_name(company_gstin, return_type, periods, group_by)
     file_url = get_reusable_export(company_gstin, return_type, periods, group_by)
     if not file_url:
@@ -358,7 +362,7 @@ def export_return_as_excel(
     get_exporter(return_type)
     group_by = validated_group_by(group_by)
 
-    periods = get_periods_between_dates(from_date, to_date)
+    periods = _periods(return_type, from_date, to_date)
     request = {
         "company_gstin": company_gstin,
         "return_type": return_type,

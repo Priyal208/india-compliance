@@ -54,18 +54,22 @@ frappe.ui.form.on("GST Return Export", {
 });
 
 function on_period_change(frm) {
-    const latest = frm._latest_month;
-    if (latest) {
-        if (!frm.doc.from_date || frm.doc.from_date > latest) {
-            return frm.set_value("from_date", fiscal_year_start(latest));
-        }
-        if (!frm.doc.to_date || frm.doc.to_date > latest) {
-            return frm.set_value("to_date", latest);
-        }
+    const bounds = frm._bounds;
+    if (bounds) {
+        const { first, latest } = bounds;
+        const from_date = clamp(frm.doc.from_date || fiscal_year_start(latest), first, latest);
+        if (from_date !== frm.doc.from_date) return frm.set_value("from_date", from_date);
+
+        const to_date = clamp(frm.doc.to_date || latest, first, latest);
+        if (to_date !== frm.doc.to_date) return frm.set_value("to_date", to_date);
     }
 
     setup_period_fields(frm);
     get_view(frm).refresh_sync_state();
+}
+
+function clamp(value, low, high) {
+    return value < low ? low : value > high ? high : value;
 }
 
 function month_start(date) {
@@ -79,10 +83,10 @@ function fiscal_year_start(date) {
 
 async function apply_period_bounds(frm) {
     if (frm.doc.gst_return) {
-        const { message } = await frm.call("get_latest_month", {
+        const { message } = await frm.call("get_period_bounds", {
             return_type: frm.doc.gst_return,
         });
-        frm._latest_month = message;
+        frm._bounds = message;
     }
 
     on_period_change(frm);
@@ -99,15 +103,16 @@ function format_month(value) {
 
 function setup_period_fields(frm) {
     const to_obj = (value) => (value ? frappe.datetime.str_to_obj(value) : false);
-    const latest = to_obj(frm._latest_month || frappe.datetime.get_today());
+    const first = to_obj(frm._bounds?.first);
+    const latest = to_obj(frm._bounds?.latest || frappe.datetime.get_today());
     const { from_date, to_date } = frm.fields_dict;
 
     for (const field of [from_date, to_date]) {
         Object.assign(field, { parse: parse_month, format_for_input: format_month });
     }
 
-    from_date.datepicker?.update({ maxDate: to_obj(frm.doc.to_date) || latest });
-    to_date.datepicker?.update({ minDate: to_obj(frm.doc.from_date), maxDate: latest });
+    from_date.datepicker?.update({ minDate: first, maxDate: to_obj(frm.doc.to_date) || latest });
+    to_date.datepicker?.update({ minDate: to_obj(frm.doc.from_date) || first, maxDate: latest });
 }
 
 function get_view(frm) {

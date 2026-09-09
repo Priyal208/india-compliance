@@ -50,6 +50,7 @@ class ReturnAdapter:
 
     return_type: ClassVar[str]
     handler_class: ClassVar[type[GSTR]]
+    first_month: ClassVar[str]
 
     def __init__(self, gstin):
         self.gstin = gstin
@@ -203,6 +204,7 @@ def remap_2a_sections(raw):
 class GSTR2AAdapter(ReturnAdapter):
     return_type = ReturnType.GSTR2A.value
     handler_class = GSTR2a
+    first_month = "2017-07-01"
 
     def download(self, periods):
         download_gstr_2a(self.gstin, periods)
@@ -215,6 +217,7 @@ class GSTR2AAdapter(ReturnAdapter):
 class GSTR2BAdapter(ReturnAdapter):
     return_type = ReturnType.GSTR2B.value
     handler_class = GSTR2b
+    first_month = "2020-07-01"
 
     def download(self, periods):
         download_gstr_2b(self.gstin, periods)

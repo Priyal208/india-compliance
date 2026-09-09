@@ -329,7 +329,7 @@ class TestGSTReturnExportController(IntegrationTestCase):
         """The UI label must reach the adapter as the enum value the logs are named with."""
         fake = {"sections": [], "totals": {}, "itc": None}
         with patch.object(ReturnAdapter, "get_range_summary", return_value=fake) as summary:
-            result = self.doc.get_summary(GSTIN, "GSTR-2B", "2020-03-01", "2020-03-31")
+            result = self.doc.get_summary(GSTIN, "GSTR-2B", "2020-08-01", "2020-08-31")
 
         self.assertEqual(result, fake)
         self.assertTrue(summary.called)
@@ -339,29 +339,42 @@ class TestGSTReturnExportController(IntegrationTestCase):
         cut_off = "india_compliance.gst_india.doctype.purchase_reconciliation_tool.BaseUtil._getdate"
         with (
             patch.object(controller, "is_job_enqueued", return_value=False),
-            patch(cut_off, return_value=getdate("2020-05-20")),
+            patch(cut_off, return_value=getdate("2021-05-20")),
         ):
             result = self.doc.sync_return_data(
-                GSTIN, "GSTR-2B", ["../etc", "132020", "", "072020"], "2020-03-01", "2020-08-01"
+                GSTIN, "GSTR-2B", ["../etc", "132021", "", "072021"], "2021-03-01", "2021-08-01"
             )
 
         self.assertEqual(result["indicator"], "orange")
 
     def test_sync_skips_when_job_already_enqueued(self):
         with patch.object(controller, "is_job_enqueued", return_value=True):
-            result = self.doc.sync_return_data(GSTIN, "GSTR-2B", ["032020"], "2020-03-01", "2020-03-31")
+            result = self.doc.sync_return_data(GSTIN, "GSTR-2B", ["082020"], "2020-08-01", "2020-08-31")
         self.assertIn("already in progress", result["message"])
 
     def test_sync_status_stops_at_the_portal_cut_off(self):
         """2B exists only from the 14th of the next month; the picker stops at the cut-off."""
         cut_off = "india_compliance.gst_india.doctype.purchase_reconciliation_tool.BaseUtil._getdate"
-        with patch(cut_off, return_value=getdate("2020-05-20")):
-            status = self.doc.get_sync_status(GSTIN, "GSTR-2B", "2020-03-01", "2020-08-01")
-            future = self.doc.get_sync_status(GSTIN, "GSTR-2B", "2020-06-01", "2020-08-01")
+        with patch(cut_off, return_value=getdate("2021-05-20")):
+            status = self.doc.get_sync_status(GSTIN, "GSTR-2B", "2021-03-01", "2021-08-01")
+            with self.assertRaises(frappe.ValidationError):
+                self.doc.get_sync_status(GSTIN, "GSTR-2B", "2021-06-01", "2021-08-01")
 
-        self.assertEqual([p["period"] for p in status["periods"]], ["032020", "042020", "052020"])
-        self.assertEqual(future["periods"], [])
-        self.assertFalse(future["has_missing_sync"])
+        self.assertEqual([p["period"] for p in status["periods"]], ["032021", "042021", "052021"])
+
+    def test_range_starts_where_the_return_does(self):
+        """2A exists from July 2017, 2B from July 2020; earlier months are never offered."""
+        cut_off = "india_compliance.gst_india.doctype.purchase_reconciliation_tool.BaseUtil._getdate"
+        with patch(cut_off, return_value=getdate("2020-12-01")):
+            status_2b = self.doc.get_sync_status(GSTIN, "GSTR-2B", "2019-01-01", "2020-09-30")
+        status_2a = self.doc.get_sync_status(GSTIN, "GSTR-2A", "2017-01-01", "2017-08-31")
+
+        self.assertEqual([p["period"] for p in status_2b["periods"]], ["072020", "082020", "092020"])
+        self.assertEqual([p["period"] for p in status_2a["periods"]], ["072017", "082017"])
+
+    def test_export_before_the_return_existed_is_refused(self):
+        with self.assertRaises(frappe.ValidationError):
+            controller.export_return_as_excel(GSTIN, "GSTR-2B", "2019-01-01", "2019-12-31")
 
     def test_sync_reports_nothing_to_sync(self):
         with (
@@ -372,5 +385,5 @@ class TestGSTReturnExportController(IntegrationTestCase):
                 return_value=[],
             ),
         ):
-            result = self.doc.sync_return_data(GSTIN, "GSTR-2B", ["032020"], "2020-03-01", "2020-03-31")
+            result = self.doc.sync_return_data(GSTIN, "GSTR-2B", ["082020"], "2020-08-01", "2020-08-31")
         self.assertEqual(result["indicator"], "orange")
