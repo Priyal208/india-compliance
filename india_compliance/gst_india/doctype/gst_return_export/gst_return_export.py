@@ -99,6 +99,7 @@ class GSTReturnExport(Document):
             now=frappe.flags.in_test,
             timeout=1800,
             deduplicate=True,
+            enqueue_after_commit=True,
         )
 
     @frappe.whitelist()

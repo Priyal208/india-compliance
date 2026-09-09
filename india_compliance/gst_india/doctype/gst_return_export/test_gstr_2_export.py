@@ -563,8 +563,8 @@ class TestGroupedExport(IntegrationTestCase):
 
     STEM_2A = f"GSTR-2A-{GSTIN_2A}"
 
-    def _export(self, periods, group_by, raw=RAW_2A):
-        with _mock_names(raw), patch.object(GSTR2AExporter, "_supplier_names", lambda self, gstins: {}):
+    def _export(self, periods, group_by):
+        with _mock_names(RAW_2A), patch.object(GSTR2AExporter, "_supplier_names", lambda self, gstins: {}):
             return build_export(GSTIN_2A, "GSTR-2A", periods, group_by)
 
     def test_single_group_stays_a_bare_workbook(self):

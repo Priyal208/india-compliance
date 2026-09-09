@@ -3,6 +3,8 @@
 
 """One adapter per return type: download, payload layout, summary."""
 
+from typing import ClassVar
+
 import frappe
 from frappe.utils import cint, flt
 
@@ -13,6 +15,7 @@ from india_compliance.gst_india.doctype.gst_return_log.gst_return_log import (
     get_raw_return_data,
 )
 from india_compliance.gst_india.utils.gstr_2 import download_gstr_2a, download_gstr_2b
+from india_compliance.gst_india.utils.gstr_2.gstr import GSTR
 from india_compliance.gst_india.utils.gstr_2.gstr_2a import GSTR2a
 from india_compliance.gst_india.utils.gstr_2.gstr_2b import GSTR2b
 from india_compliance.gst_india.utils.gstr_utils import ReturnType
@@ -45,8 +48,8 @@ def normalize_return_type(return_type):
 class ReturnAdapter:
     """Data access for one return type. Registered via its exporter."""
 
-    return_type = None
-    handler_class = None
+    return_type: ClassVar[str]
+    handler_class: ClassVar[type[GSTR]]
 
     def __init__(self, gstin):
         self.gstin = gstin

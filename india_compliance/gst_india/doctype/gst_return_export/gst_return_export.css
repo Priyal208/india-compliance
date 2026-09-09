@@ -16,6 +16,7 @@ div[data-page-route="GST Return Export"] .section-body {
 	margin-bottom: var(--margin-lg);
 }
 
+/* stylelint-disable-next-line selector-class-pattern -- air-datepicker's own class names */
 .datepicker--cell.-current-.-disabled-:not(.-selected-) {
 	color: var(--gray-500);
 	font-weight: normal;

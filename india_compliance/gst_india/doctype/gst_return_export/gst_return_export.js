@@ -185,12 +185,12 @@ class ReturnExportView {
             return this.render_placeholder();
         }
 
-        const token = (this._render_token = {});
+        const render = (this._render_seq = (this._render_seq || 0) + 1);
         const [, { message: summary }] = await Promise.all([
             this.fetch_sync_status(),
             this.frm.call("get_summary", this.get_filters()),
         ]);
-        if (token !== this._render_token) return;
+        if (render !== this._render_seq) return;
 
         await this.frm._assets;
         this.render_missing_sync_alert();
