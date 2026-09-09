@@ -217,6 +217,14 @@ def spec_value(spec, source):
     return presenter(value) if presenter else value
 
 
+def write_cell(ws, row, col, value):
+    """Text stays text: a value starting with "=" must not turn into a formula."""
+    cell = ws.cell(row=row, column=col, value=value)
+    if isinstance(value, str) and cell.data_type == "f":
+        cell.data_type = "s"
+    return cell
+
+
 class GovReturnExporter:
     """Base exporter. Subclass set adapter/template/maps and fill()."""
 
@@ -267,7 +275,7 @@ class GovReturnExporter:
                     value = row.get(label)
                     if value is None or value == "":
                         continue
-                    cell = target.cell(row=data_start + offset, column=col, value=value)
+                    cell = write_cell(target, data_start + offset, col, value)
                     if self.NUMBER_FORMAT and isinstance(value, (int, float)):
                         cell.number_format = self.NUMBER_FORMAT
         return True
@@ -301,4 +309,4 @@ class GovReturnExporter:
     def set_merged(ws, row, col, value):
         """Merged cells only writable at their anchor."""
         row, col = merge_anchor(ws, row, col)
-        ws.cell(row=row, column=col, value=value)
+        write_cell(ws, row, col, value)

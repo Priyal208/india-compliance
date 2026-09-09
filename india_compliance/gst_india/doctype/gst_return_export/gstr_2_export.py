@@ -30,6 +30,7 @@ from india_compliance.gst_india.doctype.gst_return_export.template_exporter impo
     split_label,
     state_from_code,
     state_text,
+    write_cell,
     yes_no_text,
 )
 from india_compliance.gst_india.doctype.gst_return_log.gst_return_log import (
@@ -476,12 +477,12 @@ class GSTR2AExporter(GovReturnExporter):
         synced_on = frappe.db.get_value(RETURN_LOG, f"{self.return_type}-{period}-{self.gstin}", "modified")
 
         ws = self.excel.wb["Read me"]
-        ws.cell(2, 3, self.gstin)  # C2  Taxpayer's GSTIN
-        ws.cell(3, 3, info.get("legal_name") or "")  # C3  Legal name
-        ws.cell(4, 3, info.get("trade_name") or "")  # C4  Trade name
-        ws.cell(2, 5, period)  # E2  Tax period (MMYYYY)
-        ws.cell(3, 5, financial_year(period))  # E3  Financial year
-        ws.cell(4, 5, synced_on.strftime("%d-%m-%Y") if synced_on else "")  # E4  Date of generation
+        write_cell(ws, 2, 3, self.gstin)  # C2  Taxpayer's GSTIN
+        write_cell(ws, 3, 3, info.get("legal_name") or "")  # C3  Legal name
+        write_cell(ws, 4, 3, info.get("trade_name") or "")  # C4  Trade name
+        write_cell(ws, 2, 5, period)  # E2  Tax period (MMYYYY)
+        write_cell(ws, 3, 5, financial_year(period))  # E3  Financial year
+        write_cell(ws, 4, 5, synced_on.strftime("%d-%m-%Y") if synced_on else "")  # E4  Date of generation
 
     def _build_rows(self, section, groups, list_key, item_key, names, period, labels):
         fields = self.FIELDS_BY_SECTION.get(section, self.RAW_FIELDS)
@@ -569,19 +570,25 @@ class GSTR2AExporter(GovReturnExporter):
         }
 
     def _supplier_names(self, gstins):
-        """Names off inward supplies. Only the 2B sync saves them, so no period filter."""
+        """Names off inward supplies, newest row wins. Only the 2B sync saves them, so no period filter."""
         if not gstins:
             return {}
 
         GIS = frappe.qb.DocType("GST Inward Supply")
         rows = (
             frappe.qb.from_(GIS)
-            .select(GIS.supplier_gstin, Max(GIS.supplier_name).as_("supplier_name"))
-            .where((GIS.company_gstin == self.gstin) & GIS.supplier_gstin.isin(list(gstins)))
-            .groupby(GIS.supplier_gstin)
+            .select(GIS.supplier_gstin, GIS.supplier_name)
+            .where(
+                (GIS.company_gstin == self.gstin)
+                & GIS.supplier_gstin.isin(list(gstins))
+                & GIS.supplier_name.isnotnull()
+                & (GIS.supplier_name != "")
+            )
+            .groupby(GIS.supplier_gstin, GIS.supplier_name)
+            .orderby(Max(GIS.modified))
             .run(as_dict=True)
         )
-        return {row.supplier_gstin: row.supplier_name for row in rows if row.supplier_name}
+        return {row.supplier_gstin: row.supplier_name for row in rows}
 
     def _registry_names(self, gstins):
         """Cached names for every payload supplier, one query."""

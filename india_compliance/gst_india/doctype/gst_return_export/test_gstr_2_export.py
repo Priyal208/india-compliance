@@ -350,6 +350,15 @@ class TestGSTR2BExport(IntegrationTestCase):
         self.assertEqual(ws.cell(8, 15).value, 36)  # integrated tax
         self.assertEqual(ws.cell(8, 18).value, 0)  # cess
 
+    def test_formula_looking_text_stays_text(self):
+        """A supplier can put "=..." in a number or name; the cell must not run it."""
+        raw = {
+            "docdata": {"b2b": [{"ctin": GSTIN_2B, "trdnm": '=HYPERLINK("x")', "inv": [{"inum": "=1+1"}]}]}
+        }
+        ws = _build(GSTR2BExporter, GSTIN_2B, PERIOD_2B, raw)["B2B"]
+        self.assertEqual((ws.cell(7, 2).data_type, ws.cell(7, 2).value), ("s", '=HYPERLINK("x")'))
+        self.assertEqual((ws.cell(7, 3).data_type, ws.cell(7, 3).value), ("s", "=1+1"))
+
 
 class TestGSTR2AExport(IntegrationTestCase):
     @classmethod
@@ -730,6 +739,35 @@ class TestSupplierNamesAreBatched(IntegrationTestCase):
         self.assertEqual(len(lookups), 1, "supplier lookup was split across statements")
         # only the seeded rows exist, but all 12k were queried without error
         self.assertEqual(len(names), len(self.SUPPLIERS))
+
+
+class TestSupplierNameSource(IntegrationTestCase):
+    """Historical rows can carry different names for one GSTIN; the newest row's name wins."""
+
+    SUPPLIER = "24AACT9999F1Z5"
+
+    def _inward_supply(self, name, modified):
+        row = frappe.get_doc(
+            {
+                "doctype": "GST Inward Supply",
+                "company_gstin": GSTIN_2A,
+                "supplier_gstin": self.SUPPLIER,
+                "supplier_name": name,
+                "bill_no": f"INV-{name[:4]}",
+                "bill_date": "2024-05-10",
+                "classification": "B2B",
+                "doc_type": "Invoice",
+            }
+        ).insert(ignore_permissions=True)
+        frappe.db.set_value("GST Inward Supply", row.name, "modified", modified, update_modified=False)
+
+    def test_newest_row_names_the_supplier(self):
+        self._inward_supply("Zeta Legacy Traders", "2024-01-01 00:00:00")
+        self._inward_supply("Acme Current Traders", "2025-01-01 00:00:00")
+
+        exporter = GSTR2AExporter.__new__(GSTR2AExporter)
+        exporter.gstin = GSTIN_2A
+        self.assertEqual(exporter._supplier_names({self.SUPPLIER}), {self.SUPPLIER: "Acme Current Traders"})
 
 
 class TestExportFileLifecycle(IntegrationTestCase):
