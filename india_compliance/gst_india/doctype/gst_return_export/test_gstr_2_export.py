@@ -746,7 +746,7 @@ class TestSupplierNamesAreBatched(IntegrationTestCase):
 
         exporter = GSTR2AExporter.__new__(GSTR2AExporter)
         with patch.object(frappe.db, "sql", counting):
-            names = exporter._registry_names(exporter._payload_gstins(docdata))
+            names = exporter._gstin_record_names(exporter._raw_gstins(docdata))
 
         lookups = [q for q in statements if "tabGSTIN" in q]
         self.assertEqual(len(lookups), 1, "supplier lookup was split across statements")

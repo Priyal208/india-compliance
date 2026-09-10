@@ -6,6 +6,7 @@
 import re
 from datetime import datetime
 from functools import lru_cache
+from typing import ClassVar
 
 import frappe
 from frappe.utils import flt
@@ -30,29 +31,7 @@ _ORIGINAL = "original details | "
 _WS = re.compile(r"\s+")
 
 
-def merge_raw(existing, new):
-    """Merge period payloads: lists join, numbers add, null never wins."""
-    if isinstance(existing, dict) and isinstance(new, dict):
-        merged = dict(existing)
-        for key, value in new.items():
-            merged[key] = merge_raw(merged[key], value) if key in merged else value
-        return merged
-
-    if isinstance(existing, list) and isinstance(new, list):
-        return existing + new
-
-    if isinstance(existing, (int, float)) and isinstance(new, (int, float)):
-        return existing + new
-
-    return existing if new is None else new
-
-
-def reformat_date(value, source_format, target_format):
-    """Change date text format. Bad value pass through."""
-    try:
-        return datetime.strptime(value, source_format).strftime(target_format) if value else ""
-    except (ValueError, TypeError):
-        return value or ""
+# ---- template headers -> column labels
 
 
 def normalize_label(value):
@@ -63,8 +42,8 @@ def normalize_label(value):
     return _WS.sub(" ", value).strip().lower()
 
 
-def merge_anchor(ws, row, col):
-    """Merged cell live at its top-left corner."""
+def merged_top_left(ws, row, col):
+    """A merged cell is read and written at its top-left corner."""
     for rng in ws.merged_cells.ranges:
         if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
             return rng.min_row, rng.min_col
@@ -72,7 +51,7 @@ def merge_anchor(ws, row, col):
 
 
 def merged_value(ws, row, col):
-    return ws.cell(*merge_anchor(ws, row, col)).value
+    return ws.cell(*merged_top_left(ws, row, col)).value
 
 
 def header_extent(ws):
@@ -108,6 +87,26 @@ def split_label(label):
     return label, False
 
 
+# ---- stored raw data
+
+
+def merge_raw(existing, new):
+    """Merge months' raw data: lists join, numbers add, null never wins."""
+    if isinstance(existing, dict) and isinstance(new, dict):
+        merged = dict(existing)
+        for key, value in new.items():
+            merged[key] = merge_raw(merged[key], value) if key in merged else value
+        return merged
+
+    if isinstance(existing, list) and isinstance(new, list):
+        return existing + new
+
+    if isinstance(existing, (int, float)) and isinstance(new, (int, float)):
+        return existing + new
+
+    return existing if new is None else new
+
+
 def as_section_dict(obj):
     """Portal wraps this block in a list. Fold every element."""
     if isinstance(obj, list):
@@ -119,19 +118,23 @@ def as_section_dict(obj):
     return obj or {}
 
 
-def load_merged_raw(gstin, return_type, periods):
-    """All periods' stored payloads, merged."""
-    merged = {}
-    for period in periods:
-        raw = get_raw_return_data(gstin, return_type, period)
-        if isinstance(raw, dict):
-            merged = merge_raw(merged, raw)
-    return merged
+# ---- formatters: stored or raw value -> what the portal cell shows
 
 
-# canonical value -> what the portal cell shows
+def reformat_date(value, source_format, target_format):
+    """Change date text format. Bad value pass through."""
+    try:
+        return datetime.strptime(value, source_format).strftime(target_format) if value else ""
+    except (ValueError, TypeError):
+        return value or ""
+
+
 def date_text(value):  # date -> "21/05/2026"
     return value.strftime("%d/%m/%Y")
+
+
+def raw_date_text(value):  # "DD-MM-YYYY" -> "DD/MM/YYYY"
+    return reformat_date(value, "%d-%m-%Y", "%d/%m/%Y")
 
 
 def period_text(value):  # "042026" -> "Apr'26"
@@ -153,21 +156,16 @@ def yes_no_text(value):  # stored check -> the portal's word
     return {1: "Yes", 0: "No"}.get(value, "")
 
 
+def raw_yes_no_text(value):
+    return {"Y": "Yes", "N": "No"}.get(value, "")
+
+
 def percent_text(value):  # 0.65 -> "65%"
     return f"{flt(value) * 100:g}%"
 
 
-# raw value -> what the portal cell shows
-def raw_date_text(value):  # "DD-MM-YYYY" -> "DD/MM/YYYY"
-    return reformat_date(value, "%d-%m-%Y", "%d/%m/%Y")
-
-
 def amend_text(value):  # IMPGA/IMPGSEZA "type of amendment"; A=modify, G/D=new entry
     return {"A": "Amendment", "G": "Addition", "D": "Addition"}.get(value, value or "")
-
-
-def raw_yes_no_text(value):
-    return {"Y": "Yes", "N": "No"}.get(value, "")
 
 
 def financial_year(period):  # "MMYYYY" -> "2019-20" (Indian FY starts in April)
@@ -176,8 +174,7 @@ def financial_year(period):  # "MMYYYY" -> "2019-20" (Indian FY starts in April)
     return f"{start}-{str(start + 1)[-2:]}"
 
 
-def fy_month_index(period):
-    return (int(period[:2]) - 4) % 12
+# ---- periods and file names
 
 
 def group_periods(periods, group_by):
@@ -187,12 +184,10 @@ def group_periods(periods, group_by):
         return [periods]
 
     months = GROUP_BY_MONTHS[group_by]
-
     groups = {}
     for period in periods:
-        key = (financial_year(period), fy_month_index(period) // months)
-        groups.setdefault(key, []).append(period)
-
+        fy_month = (int(period[:2]) - 4) % 12
+        groups.setdefault((financial_year(period), fy_month // months), []).append(period)
     return [groups[key] for key in sorted(groups)]
 
 
@@ -206,15 +201,20 @@ def workbook_name(return_type, gstin, periods):
     return f"{return_label(return_type)}-{gstin}-{span}.xlsx"
 
 
-def spec_value(spec, source):
-    """Cell value from one map entry."""
+# ---- cells
+
+
+def spec_value(spec, source, exporter=None):
+    """Cell value from one map entry: key, (key, formatter), or computed(source, exporter)."""
     if not spec:
         return None
-    field, presenter = spec if isinstance(spec, tuple) else (spec, None)
+    if callable(spec):
+        return spec(source, exporter)
+    field, formatter = spec if isinstance(spec, tuple) else (spec, None)
     value = source.get(field)
     if value is None or value == "":
         return None
-    return presenter(value) if presenter else value
+    return formatter(value) if formatter else value
 
 
 def write_cell(ws, row, col, value):
@@ -233,20 +233,41 @@ class GovReturnExporter:
     # portal number format for numeric cells
     NUMBER_FORMAT = None
 
+    # Column maps. A header label resolves in this order:
+    #   SHEET_FIELDS[sheet][full label]      one sheet's special cases, keyed as the header reads
+    #   ORIGINAL_FIELDS[base]                "original details | ..." columns
+    #   FIELDS[base]                         everything else; "revised details | " is stripped
+    # A spec is a source key, (key, formatter), or computed(source, exporter). None = unmapped.
+    FIELDS: ClassVar[dict] = {}
+    ORIGINAL_FIELDS: ClassVar[dict] = {}
+    SHEET_FIELDS: ClassVar[dict] = {}
+
     def __init__(self, gstin, periods):
         self.gstin = gstin
         self.periods = periods
         self.return_type = self.adapter.return_type
         self.excel = ExcelExporter(get_data_file_path(self.template))
-        self.raw = load_merged_raw(gstin, self.return_type, periods)
+
+        # all months' stored raw data, merged
+        self.raw = {}
+        for period in periods:
+            raw = get_raw_return_data(gstin, self.return_type, period)
+            if isinstance(raw, dict):
+                self.raw = merge_raw(self.raw, raw)
 
     def build(self):
         """(file_name, bytes); None when no data so grouped runs skip, not fail."""
         if not self.fill():
             return None
-
         self.fill_readme()
-        self._open_on_readme()
+
+        # open on Read me; empty sheets stay, like the portal
+        if self.excel.has_sheet("Read me"):
+            active = self.excel.wb.sheetnames.index("Read me")
+            self.excel.wb.active = active
+            for index, worksheet in enumerate(self.excel.wb.worksheets):
+                worksheet.sheet_view.tabSelected = index == active
+
         name = workbook_name(self.return_type, self.gstin, self.periods)
         return name, self.excel.save_workbook().getvalue()
 
@@ -260,13 +281,18 @@ class GovReturnExporter:
         """Write rows under the headers. Direct writes keep 0 as 0."""
         if not self.excel.has_sheet(sheet):
             return False
+
+        # headers
         ws = self.excel.wb[sheet]
         header_rows, data_start = header_extent(ws)
         labels = column_labels(ws, header_rows)
+
+        # rows
         rows = build_rows(labels)
         if not rows:
             return False
 
+        # write, spilling onto Part sheets past Excel's row cap
         capacity = EXCEL_MAX_ROW - data_start + 1
         chunks = [rows[i : i + capacity] for i in range(0, len(rows), capacity)]
         for target, chunk in zip(self._sheets_for(ws, sheet, len(chunks)), chunks, strict=True):
@@ -289,14 +315,24 @@ class GovReturnExporter:
             sheets.append(copy)
         return sheets
 
-    def _open_on_readme(self):
-        # empty sheets stay, like the portal; open on Read me
-        if not self.excel.has_sheet("Read me"):
-            return
-        active = self.excel.wb.sheetnames.index("Read me")
-        self.excel.wb.active = active
-        for index, worksheet in enumerate(self.excel.wb.worksheets):
-            worksheet.sheet_view.tabSelected = index == active
+    def rows_for(self, sheet, labels, sources):
+        """One workbook row per source dict (None = blank row), specs resolved once per sheet."""
+        specs = {label: self.spec_for(label, sheet) for label in labels.values()}
+        return [
+            {} if source is None else {label: spec_value(spec, source, self) for label, spec in specs.items()}
+            for source in sources
+        ]
+
+    @classmethod
+    def spec_for(cls, label, sheet=None):
+        """One column's spec, or None when nothing fills it."""
+        overrides = cls.SHEET_FIELDS.get(sheet) or {}
+        if label in overrides:
+            return overrides[label]
+        base, is_original = split_label(label)
+        return (cls.ORIGINAL_FIELDS if is_original else cls.FIELDS).get(base)
+
+    # ---- for subclass fill_readme
 
     @staticmethod
     def get_gstin_names(gstin):
@@ -307,6 +343,6 @@ class GovReturnExporter:
 
     @staticmethod
     def set_merged(ws, row, col, value):
-        """Merged cells only writable at their anchor."""
-        row, col = merge_anchor(ws, row, col)
+        """Merged cells only writable at their top-left corner."""
+        row, col = merged_top_left(ws, row, col)
         write_cell(ws, row, col, value)

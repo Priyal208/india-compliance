@@ -165,6 +165,12 @@ class RawField2a:
 class RawField2b:
     GENERATION_DATE = "gendt"
 
+    # top-level payload blocks
+    DOC_DATA = "docdata"
+    DOC_REJECTED = "docRejdata"
+    ITC_SUMMARY = "itcsumm"
+    ITC_REVERSAL = "itcrev"
+
     # supplier
     SUPPLIER_GSTIN = "ctin"
     SUPPLIER_NAME = "trdnm"
