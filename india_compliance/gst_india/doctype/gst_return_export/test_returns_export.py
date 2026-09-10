@@ -376,6 +376,19 @@ class TestGSTReturnExportController(IntegrationTestCase):
         with self.assertRaises(frappe.ValidationError):
             controller.export_return_as_excel(GSTIN, "GSTR-2B", "2019-01-01", "2019-12-31")
 
+    def _export_job_id(self, return_type, from_date, to_date):
+        with patch.object(controller.frappe, "enqueue") as enqueue:
+            controller.export_return_as_excel(GSTIN, return_type, from_date, to_date, "all")
+        return enqueue.call_args.kwargs["job_id"]
+
+    def test_export_jobs_are_keyed_on_the_months_and_the_return(self):
+        """Dedupe must collapse the same request, and never two different ones."""
+        august_2b = self._export_job_id("GSTR-2B", "2020-08-01", "2020-08-31")
+
+        self.assertEqual(self._export_job_id("GSTR-2B", "2020-08-10", "2020-08-20"), august_2b)
+        self.assertNotEqual(self._export_job_id("GSTR-2A", "2020-08-01", "2020-08-31"), august_2b)
+        self.assertNotEqual(self._export_job_id("GSTR-2B", "2020-09-01", "2020-09-30"), august_2b)
+
     def test_sync_reports_nothing_to_sync(self):
         with (
             patch.object(controller, "is_job_enqueued", return_value=False),

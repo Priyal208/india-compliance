@@ -526,6 +526,12 @@ class TestGSTR2AExport(IntegrationTestCase):
                 _cells(self.wb[sheet]), _cells(golden[sheet]), msg=f"cell mismatch in sheet {sheet!r}"
             )
 
+    def test_tcs_period_follows_the_month_the_record_came_from(self):
+        """A merged workbook holds several months; each TCS row names its own."""
+        _name, wb = _build_periods(GSTR2AExporter, GSTIN_2A, [PERIOD_2A, "062024"], RAW_2A, supplier_names={})
+        ws = wb["TCS"]
+        self.assertEqual([ws.cell(row, 3).value for row in (7, 8)], [PERIOD_2A, "062024"])
+
     def test_multi_period_merges_invoice_blocks(self):
         """Two periods: invoice blocks repeat, name joins both."""
         single_rows = _data_row_count(self.wb["B2B"])

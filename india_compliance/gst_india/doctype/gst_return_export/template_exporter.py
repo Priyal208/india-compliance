@@ -248,11 +248,12 @@ class GovReturnExporter:
         self.return_type = self.adapter.return_type
         self.excel = ExcelExporter(get_data_file_path(self.template))
 
-        # all months' stored raw data, merged
+        self.raw_by_period = {}
         self.raw = {}
         for period in periods:
             raw = get_raw_return_data(gstin, self.return_type, period)
             if isinstance(raw, dict):
+                self.raw_by_period[period] = raw
                 self.raw = merge_raw(self.raw, raw)
 
     def build(self):

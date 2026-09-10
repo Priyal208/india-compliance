@@ -205,7 +205,7 @@ def export_return_as_excel(
         generate_export_file,
         queue="long",
         timeout=1500,
-        job_id=f"gst_return_export:{user}:{company_gstin}:{return_type}:{from_date}:{to_date}:{group_by}",
+        job_id=f"gst_return_export:{user}:{company_gstin}:{return_type}:{export_key(periods, group_by)}",
         deduplicate=True,
         company_gstin=company_gstin,
         return_type=return_type,

@@ -43,6 +43,8 @@ from india_compliance.gst_returns.fields.gstr2 import RawField2b as raw2b
 # A workbook tab the exporter leaves empty on purpose; the comment beside it says why.
 NOT_FILLED = None
 
+SOURCE_PERIOD = "_period"
+
 # each sheet generation worded the supplier filing header differently
 SUPPLIER_HEADERS = (
     "gstr-1/iff",
@@ -306,11 +308,6 @@ def ecom_name(source, exporter):
     return exporter.names.get(source.get(raw2a.ECOM_GSTIN))
 
 
-def gstr8_period(source, exporter):
-    """The portal shows the export month, not a value from the record."""
-    return exporter.period
-
-
 def supplies_returned(source, exporter):
     return round(flt(source.get(raw2a.SUPPLY_VALUE)) - flt(source.get(raw2a.TCS_TAXABLE_VALUE)), 2)
 
@@ -443,7 +440,7 @@ class GSTR2AExporter(GovReturnExporter):
         "TCS": {
             "gstin of e-com. operator": raw2a.ECOM_GSTIN,
             "e-com. operator's name": ecom_name,
-            "tax period of gstr 8": gstr8_period,
+            "tax period of gstr 8": SOURCE_PERIOD,  # the record carries no month of its own
             "gross value of supplies": raw2a.SUPPLY_VALUE,
             "value of supplies returned": supplies_returned,
             "net amount liable for tcs": raw2a.TCS_TAXABLE_VALUE,
@@ -451,6 +448,10 @@ class GSTR2AExporter(GovReturnExporter):
             "total tcs amount | central tax": raw2a.CGST,
             "total tcs amount | state/ut tax": raw2a.SGST,
         },
+    }
+
+    SUPPLIER_ALIASES: ClassVar[dict] = {
+        "IMPGSEZ": {raw2a.SUPPLIER_GSTIN: raw2a.SEZ_GSTIN, raw2a.SUPPLIER_NAME: raw2a.SEZ_TRADE_NAME},
     }
 
     # The 2A workbook, in tab order. Read this next to the tabs.
@@ -477,7 +478,6 @@ class GSTR2AExporter(GovReturnExporter):
         docdata = self.adapter.raw_sections(self.raw)
         gstins = self._raw_gstins(docdata)
         self.names = {**self._supplier_names(gstins), **self._gstin_record_names(gstins)}
-        self.period = self.periods[-1]
 
         # a sheet per tab
         filled = False
@@ -485,7 +485,7 @@ class GSTR2AExporter(GovReturnExporter):
             if spec is NOT_FILLED:
                 continue
             category, list_key, item_key = spec
-            groups = self._section_groups(docdata, category)
+            groups = self._section_groups(category)
             if groups and self.render(sheet, partial(self._build_rows, sheet, groups, list_key, item_key)):
                 filled = True
         return filled
@@ -543,20 +543,13 @@ class GSTR2AExporter(GovReturnExporter):
             if row.legal_name or row.trade_name
         }
 
-    def _section_groups(self, docdata, category):
-        """The section's supplier groups, with the special cases the raw data carries."""
-        groups = docdata.get(category.lower()) or []
-        if category != "IMPGSEZ":
-            return groups
-
-        # SEZ carry the supplier under sgstin/tdname
+    def _section_groups(self, category):
+        """Each month's groups for the section, tagged with that month, supplier keys settled."""
+        alias = self.SUPPLIER_ALIASES.get(category) or {}
         return [
-            {
-                **group,
-                raw2a.SUPPLIER_GSTIN: group.get(raw2a.SEZ_GSTIN),
-                raw2a.SUPPLIER_NAME: group.get(raw2a.SEZ_TRADE_NAME),
-            }
-            for group in groups
+            {SOURCE_PERIOD: period, **group, **{key: group.get(src) for key, src in alias.items()}}
+            for period, raw in self.raw_by_period.items()
+            for group in (self.adapter.raw_sections(raw).get(category.lower()) or [])
         ]
 
     def _build_rows(self, sheet, groups, list_key, item_key, labels):
