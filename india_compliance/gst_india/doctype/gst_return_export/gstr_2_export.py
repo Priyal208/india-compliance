@@ -129,18 +129,6 @@ class GSTR2BExporter(GovReturnExporter):
         "remarks": raw2b.REMARKS,
     }
 
-    # one sheet's special cases, keyed as its headers read
-    SHEET_FIELDS: ClassVar[dict] = {
-        # the portal mis-merged these headers one column left; mapped by position
-        "B2B-DNRA": {
-            "revised details | taxable value | integrated tax": doc.TAXABLE_VALUE,
-            "revised details | taxable value | central tax": doc.IGST,
-            "revised details | taxable value | state/ut tax": doc.CGST,
-            "revised details | taxable value | cess": doc.SGST,
-            "revised details | tax amount": doc.CESS,
-        },
-    }
-
     # 'original details' block: every wording lands on the same three fields
     ORIGINAL_FIELDS: ClassVar[dict] = {
         "invoice number": doc.ORIGINAL_BILL_NO,
