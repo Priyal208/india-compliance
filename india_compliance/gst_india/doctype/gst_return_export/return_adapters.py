@@ -108,7 +108,7 @@ class ReturnAdapter:
     def get_summaries(self, periods):
         """Cached month summaries, built on first read. No raw, no summary."""
         names = {self._log_name(period): period for period in periods}
-        rows = frappe.get_all(
+        logs = frappe.get_all(
             RETURN_LOG,
             filters={"name": ("in", list(names)), "raw_gov_data": ("is", "set")},
             fields=["name", "section_summary"],
@@ -117,11 +117,11 @@ class ReturnAdapter:
 
         # cached, else build now
         stored = {}
-        for row in rows:
-            period = names[row.name]
+        for log in logs:
+            period = names[log.name]
             summary = (
-                frappe.parse_json(row.section_summary)
-                if row.section_summary
+                frappe.parse_json(log.section_summary)
+                if log.section_summary
                 else self.build_and_store_summary(period)
             )
             if summary:
