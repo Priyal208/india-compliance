@@ -1,9 +1,11 @@
 // Copyright (c) 2026, Resilient Tech and contributors
 // For license information, please see license.txt
 
-// one view per return type; GSTR-1/3B: subclass ReturnExportView, register in RETURN_VIEWS
 const FETCH_PROGRESS = "update_2a_2b_api_progress";
 const SAVE_PROGRESS = "update_2a_2b_transactions_progress";
+const DOWNLOAD_MESSAGE = "gstr_2a_2b_download_message";
+const REGENERATE_2B = "regenerate_gstr_2b";
+const EXPORT_READY = "gst_return_export_ready";
 const EXPORT_MODULE = "india_compliance.gst_india.doctype.gst_return_export.gst_return_export";
 const TAX_FIELDS = ["igst", "cgst", "sgst", "cess"];
 const GROUP_BY_LABELS = {
@@ -16,24 +18,25 @@ const GROUP_BY_LABELS = {
 const GROUP_BY_ALL = "all";
 const MONTH_FORMAT = "MM-YYYY";
 
-// handlers hand off to the current return type's view
+// ---- form handlers: each hands off to the current return type's view
+
 frappe.ui.form.on("GST Return Export", {
     setup(frm) {
         frm._assets = frappe.require(["gst_return_export.bundle.js", "india_compliance.bundle.css"]);
         set_realtime_listeners(frm);
         frm.doc.company ||= frappe.defaults.get_user_default("Company");
-        apply_period_bounds(frm);
+        load_period_bounds(frm);
         frm.trigger("company");
     },
 
     refresh(frm) {
         frm.disable_save();
         frm.page.clear_indicator();
-        setup_period_fields(frm);
+        apply_month_pickers(frm);
 
         const view = get_view(frm);
         view.setup_actions();
-        view.refresh_sync_state();
+        view.refresh_view();
     },
 
     async company(frm) {
@@ -44,14 +47,27 @@ frappe.ui.form.on("GST Return Export", {
         frm.set_value("company_gstin", gstin);
     },
 
-    company_gstin: (frm) => get_view(frm).refresh_sync_state(),
+    company_gstin: (frm) => get_view(frm).refresh_view(),
 
-    gst_return: (frm) => apply_period_bounds(frm),
+    gst_return: (frm) => load_period_bounds(frm),
 
     from_date: (frm) => on_period_change(frm),
 
     to_date: (frm) => on_period_change(frm),
 });
+
+// ---- month pickers
+
+async function load_period_bounds(frm) {
+    const return_type = frm.doc.gst_return;
+    if (return_type) {
+        const { message } = await frm.call("get_period_bounds", { return_type });
+        if (frm.doc.gst_return !== return_type) return;
+        frm._bounds = message;
+    }
+
+    on_period_change(frm);
+}
 
 function on_period_change(frm) {
     const bounds = frm._bounds;
@@ -64,44 +80,11 @@ function on_period_change(frm) {
         if (to_date !== frm.doc.to_date) return frm.set_value("to_date", to_date);
     }
 
-    setup_period_fields(frm);
-    get_view(frm).refresh_sync_state();
+    apply_month_pickers(frm);
+    get_view(frm).refresh_view();
 }
 
-function clamp(value, low, high) {
-    return value < low ? low : value > high ? high : value;
-}
-
-function month_start(date) {
-    return moment(date).startOf("month").format("YYYY-MM-DD");
-}
-
-function fiscal_year_start(date) {
-    const month = moment(date);
-    return month_start([month.month() >= 3 ? month.year() : month.year() - 1, 3, 1]);
-}
-
-async function apply_period_bounds(frm) {
-    const return_type = frm.doc.gst_return;
-    if (return_type) {
-        const { message } = await frm.call("get_period_bounds", { return_type });
-        if (frm.doc.gst_return !== return_type) return;
-        frm._bounds = message;
-    }
-
-    on_period_change(frm);
-}
-
-function parse_month(value) {
-    const date = moment(value, [MONTH_FORMAT, "YYYY-MM-DD"], true);
-    return date.isValid() ? month_start(date) : "";
-}
-
-function format_month(value) {
-    return value ? moment(value).format(MONTH_FORMAT) : "";
-}
-
-function setup_period_fields(frm) {
+function apply_month_pickers(frm) {
     const to_obj = (value) => (value ? frappe.datetime.str_to_obj(value) : false);
     const first = to_obj(frm._bounds?.first);
     const latest = to_obj(frm._bounds?.latest || frappe.datetime.get_today());
@@ -115,24 +98,45 @@ function setup_period_fields(frm) {
     to_date.datepicker?.update({ minDate: to_obj(frm.doc.from_date) || first, maxDate: latest });
 }
 
-function get_view(frm) {
-    if (!frm._view || frm._view.return_type !== frm.doc.gst_return) {
-        const View = RETURN_VIEWS[frm.doc.gst_return] || ReturnExportView;
-        frm._view = new View(frm);
-    }
-    return frm._view;
+// dates are "YYYY-MM-DD", so plain string order is date order
+function clamp(value, low, high) {
+    return value < low ? low : value > high ? high : value;
 }
+
+function fiscal_year_start(date) {
+    const month = moment(date);
+    return month_start([month.month() >= 3 ? month.year() : month.year() - 1, 3, 1]);
+}
+
+function month_start(date) {
+    return moment(date).startOf("month").format("YYYY-MM-DD");
+}
+
+function parse_month(value) {
+    const date = moment(value, [MONTH_FORMAT, "YYYY-MM-DD"], true);
+    return date.isValid() ? month_start(date) : "";
+}
+
+function format_month(value) {
+    return value ? moment(value).format(MONTH_FORMAT) : "";
+}
+
+function format_period(period) {
+    return period && period.length === 6 ? `${period.slice(0, 2)}-${period.slice(2)}` : period;
+}
+
+// ---- realtime
 
 function set_realtime_listeners(frm) {
     frappe.realtime.on(FETCH_PROGRESS, (data) => get_view(frm).update_progress?.(data, true));
     frappe.realtime.on(SAVE_PROGRESS, (data) => get_view(frm).update_progress?.(data, false));
 
-    frappe.realtime.on("gstr_2a_2b_download_message", (message) => {
+    frappe.realtime.on(DOWNLOAD_MESSAGE, (message) => {
         frm.dashboard.hide();
         frappe.msgprint(message);
     });
 
-    frappe.realtime.on("regenerate_gstr_2b", ({ return_period }) => {
+    frappe.realtime.on(REGENERATE_2B, ({ return_period }) => {
         frm.dashboard.hide();
         frappe.show_alert({
             message: __("GSTR-2B for {0} isn't generated on the portal yet.", [return_period]),
@@ -140,7 +144,7 @@ function set_realtime_listeners(frm) {
         });
     });
 
-    frappe.realtime.on("gst_return_export_ready", on_export_ready);
+    frappe.realtime.on(EXPORT_READY, on_export_ready);
 }
 
 function on_export_ready({ file_name, request, error }) {
@@ -153,6 +157,8 @@ function on_export_ready({ file_name, request, error }) {
 
     open_url_post(`/api/method/${EXPORT_MODULE}.download_export_file`, request);
 }
+
+// ---- views
 
 class ReturnExportView {
     constructor(frm) {
@@ -183,13 +189,14 @@ class ReturnExportView {
         return message;
     }
 
-    async refresh_sync_state() {
+    async refresh_view() {
         if (!this.get_filters()) {
             this.sync_status = null;
             this.remove_missing_sync_alert();
             return this.render_placeholder();
         }
 
+        // a later change may answer first; only the newest draws
         const render = (this.frm._render_seq = (this.frm._render_seq || 0) + 1);
         const [, { message: summary }] = await Promise.all([
             this.fetch_sync_status(),
@@ -200,6 +207,47 @@ class ReturnExportView {
         await this.frm._assets;
         this.render_missing_sync_alert();
         this.render_summary(summary);
+    }
+
+    render_placeholder(message) {
+        const fallback = __("Select Company, GSTIN, GST Return and the period to see the summary.");
+        this.render_summary_wrapper(`<p class="text-muted">${message || fallback}</p>`);
+    }
+
+    render_summary_wrapper(inner_html) {
+        const $wrapper = this.frm.get_field("summary_html")?.$wrapper;
+        $wrapper?.html(`
+            <div class="gst-return-summary">
+                <div class="summary-heading">${__("Summary")}</div>
+                ${inner_html}
+            </div>`);
+        return $wrapper;
+    }
+
+    render_missing_sync_alert() {
+        this.remove_missing_sync_alert();
+
+        const { frm } = this;
+        if (!frm.layout?.wrapper || !this.sync_status?.has_missing_sync) return;
+
+        const action = india_compliance.is_api_enabled()
+            ? `<a href="#" class="alert-link gst-export-sync-now">${__("Sync now")}</a>`
+            : "";
+        const $alert = $(`
+            <div class="gst-export-sync-alert alert alert-primary fade show d-flex align-items-center justify-content-between border-0" role="alert">
+                <div>${__("Some months in the selected period aren't synced yet.")}</div>
+                ${action}
+            </div>
+        `).prependTo(frm.layout.wrapper);
+
+        $alert.find(".gst-export-sync-now").on("click", (event) => {
+            event.preventDefault();
+            this.sync();
+        });
+    }
+
+    remove_missing_sync_alert() {
+        this.frm.layout?.wrapper?.find(".gst-export-sync-alert").remove();
     }
 
     async sync() {
@@ -226,7 +274,7 @@ class ReturnExportView {
         const periods = status?.periods || [];
         const synced = periods.filter((period) => period.synced);
         if (synced.length < periods.length) {
-            this.warn_unsynced_periods(periods);
+            this.warn_missing_sync(periods);
             if (!synced.length) return;
         }
 
@@ -280,56 +328,15 @@ class ReturnExportView {
         });
     }
 
-    render_placeholder(message) {
-        const fallback = __("Select Company, GSTIN, GST Return and the period to see the summary.");
-        this.set_summary_html(`<p class="text-muted">${message || fallback}</p>`);
-    }
-
-    set_summary_html(inner_html) {
-        const $wrapper = this.frm.get_field("summary_html")?.$wrapper;
-        $wrapper?.html(`
-            <div class="gst-return-summary">
-                <div class="summary-heading">${__("Summary")}</div>
-                ${inner_html}
-            </div>`);
-        return $wrapper;
-    }
-
-    render_missing_sync_alert() {
-        this.remove_missing_sync_alert();
-
-        const { frm } = this;
-        if (!frm.layout?.wrapper || !this.sync_status?.has_missing_sync) return;
-
-        const action = india_compliance.is_api_enabled()
-            ? `<a href="#" class="alert-link gst-export-sync-now">${__("Sync now")}</a>`
-            : "";
-        const $alert = $(`
-            <div class="gst-export-sync-alert alert alert-primary fade show d-flex align-items-center justify-content-between border-0" role="alert">
-                <div>${__("Some months in the selected period aren't synced yet.")}</div>
-                ${action}
-            </div>
-        `).prependTo(frm.layout.wrapper);
-
-        $alert.find(".gst-export-sync-now").on("click", (event) => {
-            event.preventDefault();
-            this.sync();
-        });
-    }
-
-    remove_missing_sync_alert() {
-        this.frm.layout?.wrapper?.find(".gst-export-sync-alert").remove();
-    }
-
-    warn_unsynced_periods(periods) {
-        const unsynced = periods
+    warn_missing_sync(periods) {
+        const missing = periods
             .filter((period) => !period.synced)
             .map((period) => format_period(period.period));
-        if (!unsynced.length) return;
+        if (!missing.length) return;
 
         frappe.show_alert({
             message: __("Not synced yet: {0}. Use Sync to fetch it from the GST Portal.", [
-                unsynced.join(", "),
+                missing.join(", "),
             ]),
             indicator: "orange",
         });
@@ -397,6 +404,18 @@ class GSTR2View extends ReturnExportView {
         dialog.show();
     }
 
+    sync_option_label(period) {
+        let status = __("Not synced");
+        if (period.synced) {
+            status = period.last_updated_on
+                ? __("Last synced on {0}", [frappe.datetime.str_to_user(period.last_updated_on)])
+                : __("Synced");
+        }
+        const month = frappe.utils.escape_html(format_period(period.period));
+        status = frappe.utils.escape_html(status);
+        return `${month} <span style="color: var(--text-light); font-weight: 400;">· ${status}</span>`;
+    }
+
     show_progress(percent, message) {
         this.frm.dashboard.show_progress(__("Sync Progress"), percent, message);
     }
@@ -410,6 +429,7 @@ class GSTR2View extends ReturnExportView {
 
         if (is_last_period) this.last_return_period = return_period;
 
+        // the save phase closes only on the last month's final event
         const sync_complete =
             !is_fetch_phase && current_progress === 100 && return_period === this.last_return_period;
         if (sync_complete) this.on_sync_complete();
@@ -419,7 +439,7 @@ class GSTR2View extends ReturnExportView {
         setTimeout(() => {
             this.frm.dashboard.hide();
             this.frm.dashboard.set_headline(__("Successfully Synced"));
-            this.refresh_sync_state();
+            this.refresh_view();
             setTimeout(() => this.frm.dashboard.clear_headline(), 2000);
         }, 1000);
     }
@@ -431,32 +451,21 @@ class GSTR2View extends ReturnExportView {
             : `<p class="text-muted">${__(
                   "No data synced yet — click Sync to fetch it from the GST Portal.",
               )}</p>`;
-        const $wrapper = this.set_summary_html(this.extras_html(data) + body);
+        const $wrapper = this.render_summary_wrapper(this.itc_summary_html(data) + body);
 
-        this.mount_extras($wrapper, data);
+        this.render_itc_summary($wrapper, data);
         if (has_data) {
-            this.mount_section_table($wrapper.find(".section-table"), data.sections, data.totals);
+            this.render_section_table($wrapper.find(".section-table"), data.sections, data.totals);
         }
     }
 
-    extras_html() {
+    // 2A has no ITC summary; 2B fills these
+    itc_summary_html() {
         return "";
     }
-    mount_extras() {}
+    render_itc_summary() {}
 
-    sync_option_label(period) {
-        let status = __("Not synced");
-        if (period.synced) {
-            status = period.last_updated_on
-                ? __("Last synced on {0}", [frappe.datetime.str_to_user(period.last_updated_on)])
-                : __("Synced");
-        }
-        const month = frappe.utils.escape_html(format_period(period.period));
-        status = frappe.utils.escape_html(status);
-        return `${month} <span style="color: var(--text-light); font-weight: 400;">· ${status}</span>`;
-    }
-
-    mount_section_table($wrapper, sections, totals) {
+    render_section_table($wrapper, sections, totals) {
         const data = [];
         for (const section of sections) {
             data.push({ ...section, indent: 0 });
@@ -495,10 +504,10 @@ class GSTR2View extends ReturnExportView {
         });
 
         table.datatable.rowmanager.collapseAllNodes();
-        this.mount_tree_footer($wrapper, table.datatable.rowmanager);
+        this.render_expand_button($wrapper, table.datatable.rowmanager);
     }
 
-    mount_tree_footer($wrapper, rowmanager) {
+    render_expand_button($wrapper, rowmanager) {
         let expanded = false;
         const $button = $(
             `<button class="btn btn-xs btn-default section-table-footer">${__("Expand All")}</button>`,
@@ -513,15 +522,15 @@ class GSTR2View extends ReturnExportView {
 }
 
 class GSTR2BView extends GSTR2View {
-    extras_html(data) {
+    itc_summary_html(data) {
         return data?.itc ? `<div class="itc-summary"></div>` : "";
     }
 
-    mount_extras($wrapper, data) {
-        if (data?.itc) this.mount_itc_cards($wrapper.find(".itc-summary"), data.itc);
+    render_itc_summary($wrapper, data) {
+        if (data?.itc) this.render_itc_cards($wrapper.find(".itc-summary"), data.itc);
     }
 
-    mount_itc_cards($wrapper, itc) {
+    render_itc_cards($wrapper, itc) {
         new india_compliance.NumberCardManager({
             $wrapper,
             cards: [
@@ -533,11 +542,16 @@ class GSTR2BView extends GSTR2View {
     }
 }
 
+// one view per return type; GSTR-1/3B: subclass ReturnExportView and register here
 const RETURN_VIEWS = {
     "GSTR-2A": GSTR2View,
     "GSTR-2B": GSTR2BView,
 };
 
-function format_period(period) {
-    return period && period.length === 6 ? `${period.slice(0, 2)}-${period.slice(2)}` : period;
+function get_view(frm) {
+    if (!frm._view || frm._view.return_type !== frm.doc.gst_return) {
+        const View = RETURN_VIEWS[frm.doc.gst_return] || ReturnExportView;
+        frm._view = new View(frm);
+    }
+    return frm._view;
 }
